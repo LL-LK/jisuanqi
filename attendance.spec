@@ -63,10 +63,18 @@ excludes = [
     'setuptools', 'pip',
 ]
 
+linux_binaries = []
+if sys.platform.startswith('linux'):
+    lib_dir = os.path.join(sys.prefix, 'lib')
+    for so_name in ('libOpenGL.so.0', 'libGLX.so.0', 'libGLdispatch.so.0', 'libEGL.so.1', 'libGL.so.1'):
+        so_path = os.path.join(lib_dir, so_name)
+        if os.path.exists(so_path):
+            linux_binaries.append((so_path, '.'))
+
 a = Analysis(
     ['app.py'],
     pathex=[PROJECT_DIR],
-    binaries=[],
+    binaries=linux_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -99,7 +107,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 # 5. Version Information Metadata
 version_file = os.path.join(PROJECT_DIR, 'file_version_info.txt')
-version_param = version_file if os.path.exists(version_file) else None
+version_param = version_file if (sys.platform == 'win32' and os.path.exists(version_file)) else None
 
 exe = EXE(
     pyz,
