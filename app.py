@@ -1,0 +1,2761 @@
+# -*- coding: utf-8 -*-
+"""三早一晚免勤自动统计系统 · 桌面界面（PySide6）。
+
+四个能力面板：
+    概览 / 学院出勤率 / 教室明细 / 异常清单（含低出勤率复核） / 词典编辑 / 合成数据自测
+
+硬规则（界面上也不允许违反）：
+    输出只保留三张原始工作表；屏风不参与计算且内容零改动；
+    实到缺失留空不写 0；绝不覆盖输入文件。
+"""
+
+from __future__ import annotations
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+import traceback
+from datetime import datetime
+from functools import lru_cache
+
+from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, QPointF,
+                            QRectF, QSettings, QThread, QTimer, QUrl, Qt, Signal)
+from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QFont,
+                           QIcon, QKeySequence, QPainter, QPen,
+                           QPixmap, QShortcut)
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
+                               QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QProgressBar,
+                               QPushButton, QSizePolicy, QSpinBox,
+                               QSplitter, QTableView, QTabWidget, QVBoxLayout,
+                               QWidget)
+
+from core import RunConfig, run, __version__ as APP_VERSION
+from core.calc import ESTIMATE_RGB          # R17 估算标记色（唯一事实源，界面禁另写一份）
+from core.dictionary import Dictionary, load_tables, save_tables
+from core.exempt_report import COLLEGE_REPORT_COLUMNS, REPORT_COLUMNS, export_exempt_report
+from core.export import _same_path, atomic_output, check_output_path, unique_workbook_paths
+from core.io_detail import week_from_label
+from core.io_exempt import normalize_student_name
+from core.excel_safety import (
+    DiagnosticMasker,
+    FileCheckResult,
+    classify_excel_file,
+    generate_diagnostic_log,
+    verify_excel_health,
+)
+
+APP_NAME = '本地考勤工具'
+APP_VERSION = APP_VERSION
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+DICT_NAME = '免勤词典.xlsx'
+LOW_RATE_THRESHOLD = 0.80
+PRIVACY_NOTICE = (
+    '本工具在当前设备读取你选中的考勤表、免勤表和词典。姓名、学号、学院、班级、校区和'
+    '免勤申请信息用于核对身份、筛选记录和计算统计结果。软件运行时不上传表格，不调用云端模型。\n\n'
+    '人员明细在本次运行中保留在内存。程序会记住周次、输出位置、词典路径和窗口设置。'
+    '结果工作簿保存在你选择的位置，新增汇总和核对页包含统计数字、状态和来源表行号。\n\n'
+    '手动导出的人员名单包含个人信息。诊断日志会做脱敏处理，分享前请核对内容。'
+    '如需删除导出的文件，请在本机删除对应文件。'
+)
+
+
+class AttendanceIcon:
+    @staticmethod
+    @lru_cache(maxsize=8)
+    def pixmap(size=48):
+        image_path = os.path.join(getattr(sys, '_MEIPASS', PROJECT_DIR), 'assets', 'strawberry-bear.png')
+        artwork = QPixmap(image_path)
+        if not artwork.isNull():
+            return artwork.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        icon = QPixmap(size, size)
+        icon.fill(Qt.transparent)
+        painter = QPainter(icon)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.scale(size / 48, size / 48)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor('#E6EEFF'))
+        painter.drawRoundedRect(QRectF(1, 1, 46, 46), 10, 10)
+        pen = QPen(QColor('#244E9D'), 2.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(QRectF(11, 13, 26, 25), 4, 4)
+        painter.drawLine(QPointF(11, 21), QPointF(37, 21))
+        painter.drawLine(QPointF(18, 10), QPointF(18, 16))
+        painter.drawLine(QPointF(30, 10), QPointF(30, 16))
+        painter.drawLine(QPointF(18, 29), QPointF(22, 33))
+        painter.drawLine(QPointF(22, 33), QPointF(30, 26))
+        painter.end()
+        return icon
+
+
+COLORS = {
+    'bg': '#F9F5F6',
+    'card': '#FFFFFF',
+    'border': '#E5D6DC',
+    'control': '#A4B4CB',
+    'divider': '#E4EAF2',
+    'header_bg': '#F2E9ED',
+    'text': '#273B54',
+    'text_strong': '#172B45',
+    'muted': '#52637B',
+    'primary': '#2754B7',
+    'primary_dark': '#183D8D',
+    'primary_light': '#E6EEFF',
+    'info': '#355F9B',
+    'danger': '#B33C48',
+    'warn_bg': '#FFF6DC',
+    'warn_fg': '#8D580D',
+    'info_bg': '#EDF4FF',
+    'info_fg': '#284D80',
+    'low_bg': '#FFEAEA',
+    'low_fg': '#A82A3F',
+    'slate': '#5D6F87',
+    'green_fg': '#146F64',
+    'muted_fg': '#52637B',
+    'estimate_bg': '#' + ESTIMATE_RGB,
+    'estimate_fg': '#8D580D',
+    'trace_bg': '#EEF2F7',
+}
+
+APP_QSS = """
+
+
+QWidget { background:%(bg)s; color:%(text)s; font-size:13px; }
+QMainWindow, QDialog { background:%(bg)s; }
+QLabel { background:transparent; }
+QCheckBox { background:transparent; }
+QToolTip { background:#273B54; color:#FFFFFF; border:none; border-radius:6px; padding:5px 9px; }
+
+/* ---------- 三槽流水线 ---------- */
+QFrame#dropSlot, QFrame#settingsPanel, QFrame#metricCard {
+    background:%(card)s; border:1px solid %(border)s; border-radius:10px; }
+QFrame#dropSlot[dragOver="true"] { background:#E8F1FF; border:2px solid %(primary)s; }
+QFrame#dropSlot[ready="true"] { background:#FFFFFF; border:1px solid #A9C9CB; }
+QFrame#dropSlot[dragReject="true"] { background:#FFF2F2; border:2px solid #FFAAA6; }
+QLabel#slotBadge { color:#FFFFFF; font-weight:bold; border-radius:7px; padding:2px 8px;
+                   background:%(primary)s; }
+QLabel#slotBadge[ready="true"] { background:%(green_fg)s; }
+QLabel#slotTitle { font-size:15px; font-weight:600; color:%(text_strong)s; }
+QLabel#slotPath { color:%(muted)s; }
+QLabel#workspaceTitle { font-size:26px; font-weight:bold; color:%(text_strong)s; }
+QLabel#sectionTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
+QLabel#metricValue { font-size:24px; font-weight:bold; color:%(primary_dark)s; }
+QLabel#localBadge { background:#E9F4ED; color:%(green_fg)s; border-radius:8px;
+                    padding:5px 10px; font-weight:600; }
+QWidget#reportTools, QTabWidget QWidget#contentPage { background:%(card)s; }
+
+/* ---------- 按钮 ---------- */
+QPushButton { background:%(card)s; color:%(text)s; border:1.5px solid %(control)s;
+              border-radius:8px; padding:6px 14px; min-height:20px; font-weight:500; }
+QPushButton:hover { border-color:%(primary)s; color:%(primary_dark)s; background:#EFF4FE; }
+QPushButton:pressed { background:#E0EAFC; border-color:%(primary_dark)s; }
+QPushButton:focus { border-color:%(primary)s; }
+QPushButton:disabled { color:#7D8898; background:#F1F4F8; border-color:#E1E7EE; }
+QPushButton#primaryButton { background:%(primary)s; color:#FFFFFF; border:2px solid %(primary)s;
+                            border-radius:8px; font-weight:bold; font-size:14px; padding:6px 14px;
+                            min-height:22px; }
+QPushButton#primaryButton:hover, QPushButton#primaryButton:pressed { background:%(primary_dark)s; }
+QPushButton#primaryButton:focus { border-color:#132D6C; }
+QPushButton#primaryButton:disabled { background:#E7EDF5; color:#586B82; border-color:#E7EDF5; }
+QPushButton#privacyLink { background:transparent; color:%(primary)s; border:1px solid transparent; }
+QPushButton#privacyLink:hover, QPushButton#privacyLink:focus {
+    background:%(primary_light)s; border-color:%(border)s; }
+
+/* ---------- 输入控件 ---------- */
+QLineEdit, QComboBox, QSpinBox { background:%(card)s; color:%(text)s;
+    border:1.5px solid %(control)s; border-radius:8px; padding:6px 10px; min-height:20px;
+    selection-background-color:#C9DBFD; selection-color:%(text_strong)s; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color:%(primary)s; background:#FFFFFF; }
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
+    color:#7D8898; background:#F1F4F8; border-color:#E1E7EE; }
+QLineEdit::placeholder { color:#64748A; }
+QComboBox QAbstractItemView { background:%(card)s; border:1.5px solid %(control)s;
+    selection-background-color:#E6EEFF; selection-color:%(text)s; outline:none; border-radius:6px; }
+
+/* ---------- 表格 ---------- */
+QTableView { background:%(card)s; alternate-background-color:#F7F9FC;
+             border:1.5px solid %(border)s; border-radius:10px; gridline-color:%(divider)s;
+             selection-background-color:#DCE8FC; selection-color:#172B45; }
+QTableView::item { padding:5px 8px; border:none; }
+QTableView::item:selected { background:#DCE8FC; color:#172B45; }
+QHeaderView { background:%(card)s; }
+QHeaderView::section { background:%(header_bg)s; color:%(text_strong)s; padding:7px 10px;
+                       border:none; border-right:1px solid %(divider)s;
+                       border-bottom:1.5px solid %(border)s; font-weight:bold; font-size:12px; }
+QHeaderView::section:hover { background:#E0EAFC; }
+
+/* ---------- 页签 ---------- */
+QTabWidget::pane { background:%(card)s; border:1.5px solid %(border)s; border-radius:10px; top:-1px; }
+QTabBar::tab { background:transparent; color:%(muted)s; padding:8px 11px;
+               margin-right:2px; border-top-left-radius:8px; border-top-right-radius:8px;
+               border-bottom:2.5px solid transparent; font-weight:500; }
+QTabBar::tab:hover { color:%(primary_dark)s; background:#EFF4FE; }
+QTabBar::tab:selected { background:%(card)s; color:%(primary_dark)s; font-weight:bold;
+                         border-bottom:2.5px solid %(primary)s; }
+QTabBar::tab:disabled { color:#8390A0; }
+
+/* ---------- 文本域（概览 / 自测输出；等宽字体在 Python 侧设置） ---------- */
+QPlainTextEdit { background:%(card)s; color:%(text)s; border:1.5px solid %(border)s;
+                 border-radius:10px; padding:10px; }
+
+/* ---------- 进度条 ---------- */
+QProgressBar { border:1px solid %(border)s; border-radius:8px; background:#EBF1FA;
+               text-align:center; height:18px; color:%(text_strong)s; font-weight:bold; font-size:12px; }
+QProgressBar::chunk { background:%(primary)s; border-radius:7px; }
+
+/* ---------- 滚动条 ---------- */
+QScrollBar:vertical { background:%(bg)s; width:10px; margin:0; border:none; }
+QScrollBar::handle:vertical { background:#C5D2E3; border-radius:5px; min-height:28px; }
+QScrollBar::handle:vertical:hover { background:%(primary)s; }
+QScrollBar:horizontal { background:%(bg)s; height:10px; margin:0; border:none; }
+QScrollBar::handle:horizontal { background:#C5D2E3; border-radius:5px; min-width:28px; }
+QScrollBar::handle:horizontal:hover { background:%(primary)s; }
+QScrollBar::add-line, QScrollBar::sub-line { height:0px; width:0px; }
+QScrollBar::add-page, QScrollBar::sub-page { background:none; }
+
+/* ---------- 分组框 ---------- */
+QGroupBox { background:%(card)s; border:1.5px solid %(border)s; border-radius:10px;
+            margin-top:14px; padding-top:10px; }
+QGroupBox::title { subcontrol-origin:margin; left:12px; padding:0 4px;
+                   color:%(primary_dark)s; font-weight:600; }
+
+/* ---------- 提示、说明与状态行 ---------- */
+QLabel#hint { color:%(muted)s; font-size:12px; }
+QLabel#notice { color:%(text)s; background:#F5F8FC; border:1.5px dashed %(border)s;
+                border-radius:10px; padding:12px; }
+QLabel#statusBar { color:%(text_strong)s; background:%(card)s; border:1.5px solid %(border)s;
+                   border-left:4px solid %(primary)s; border-radius:8px; padding:8px 12px; font-weight:500; }
+QLabel#statusBar[state="warn"] { border-left:4px solid %(warn_fg)s; color:%(warn_fg)s; background:#FFFDF7; }
+QLabel#statusBar[state="error"] { border-left:4px solid %(danger)s; color:%(danger)s; background:#FFF8F8; }
+
+QStatusBar { background:%(card)s; color:%(text_strong)s; border-top:1px solid %(divider)s; }
+""" % COLORS
+
+
+# ----------------------------------------------------------------- 资源路径
+
+def _app_base_dir() -> str:
+    """获取应用程序所在基准目录：打包态取 EXE 所在目录，源码态取 PROJECT_DIR。"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return PROJECT_DIR
+
+
+def _is_dir_writable(folder: str) -> bool:
+    """探测目录是否可写（防范安装在只读 Program Files 下的权限异常）。"""
+    try:
+        os.makedirs(folder, exist_ok=True)
+        probe = os.path.join(folder, '.write_probe_%d' % os.getpid())
+        with open(probe, 'w', encoding='utf-8') as fh:
+            fh.write('ok')
+        os.remove(probe)
+        return True
+    except OSError:
+        return False
+
+
+def user_writable_dir() -> str:
+    """返回用户可写数据目录：优先 EXE/项目同级目录，只读时回退至 %LOCALAPPDATA%/SanzaoWan。"""
+    base = _app_base_dir()
+    if _is_dir_writable(base):
+        return base
+    local_appdata = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+    fallback = os.path.join(local_appdata, 'SanzaoWan')
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
+
+def resource_path(name: str) -> str:
+    """兼容用户可写目录、EXE 同级目录、PyInstaller (_MEIPASS) 与源码目录。"""
+    for folder in (
+        user_writable_dir(),
+        _app_base_dir(),
+        getattr(sys, '_MEIPASS', PROJECT_DIR),
+        PROJECT_DIR,
+    ):
+        candidate = os.path.join(folder, name)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(user_writable_dir(), name)
+
+
+def default_dictionary_path() -> str:
+    """返回可持久化的免勤词典路径（绝不直接写回单文件临时解压目录 _MEIPASS）。"""
+    writable_dir = user_writable_dir()
+    writable_target = os.path.join(writable_dir, DICT_NAME)
+    if os.path.exists(writable_target):
+        return writable_target
+
+    # 若可写目录尚无词典，从安装目录或 _MEIPASS 内置副本复制一份出来供持久化编辑
+    for folder in (_app_base_dir(), getattr(sys, '_MEIPASS', PROJECT_DIR), PROJECT_DIR):
+        bundled = os.path.join(folder, DICT_NAME)
+        if os.path.exists(bundled):
+            if os.path.normcase(os.path.abspath(bundled)) != os.path.normcase(os.path.abspath(writable_target)):
+                try:
+                    shutil.copy2(bundled, writable_target)
+                    return writable_target
+                except OSError:
+                    return bundled
+            return bundled
+    return writable_target
+
+
+def default_output_dir() -> str:
+    if getattr(sys, 'frozen', False):
+        p = os.path.join(user_writable_dir(), '_work', '输出')
+    else:
+        base = os.path.dirname(PROJECT_DIR)
+        p = os.path.join(base, '_work', '输出')
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+# ----------------------------------------------------------------- 表格模型
+
+class _GenericTableModel(QAbstractTableModel):
+    """把 dict 列表渲染成表格数据，供 QTableView 使用。
+
+    支持两种上色：
+      * 行级 `row_colors`（整行底色，如异常清单 / 低出勤率 / 留痕行）；
+      * 单元格级 `cell_styles`（形如 {(行, 列): {'bg': QColor, 'italic': True,
+        'tip': str}}），用于估算标记这类"同一行里只有个别格特殊"的场景。
+    """
+
+    def __init__(self, columns, rows, row_colors=None, cell_styles=None):
+        super().__init__()
+        self.columns = list(columns)
+        self.rows = list(rows)
+        self.row_colors = dict(row_colors or {})
+        self.cell_styles = dict(cell_styles or {})
+        self.base_font = QFont()
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(self.columns)
+
+    def _cell_style(self, row, column):
+        return self.cell_styles.get((row, column), {})
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        row, column = index.row(), index.column()
+        item = self.rows[row]
+        value = item.get(self.columns[column], '')
+        style = self._cell_style(row, column)
+        if role == Qt.DisplayRole:
+            # 缺失值在界面上显示「—」占位（R2：界面可占位，导出仍是真空白）；
+            # 数值 0 是有效值，必须原样显示成 0，绝不能与缺失混淆。
+            # 其余值原样返回（数值保持数值类型，由视图自行对齐与格式化）。
+            if value is None:
+                return '—'
+            return value
+        if role == Qt.TextAlignmentRole and isinstance(value, (int, float)):
+            return Qt.AlignRight | Qt.AlignVCenter
+        if role == Qt.ToolTipRole:
+            if style.get('tip'):
+                return style['tip']
+            if value is None:
+                return '源表未填，待补录'
+            return str(value)
+        if role == Qt.BackgroundRole:
+            color = style.get('bg', self.row_colors.get(row))
+            return QBrush(color) if color is not None else None
+        if role == Qt.FontRole:
+            if style.get('italic'):
+                font = QFont(self.base_font)
+                font.setItalic(True)
+                return font
+        return None
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return self.columns[section]
+        return section + 1
+
+
+# ----------------------------------------------------------------- 后台任务
+
+class Worker(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, config: RunConfig):
+        super().__init__()
+        self.config = config
+
+    def run(self):
+        try:
+            result = run(self.config)
+            self.finished.emit(result)
+        except Exception:                              # noqa: BLE001
+            self.failed.emit(traceback.format_exc())
+
+
+# ----------------------------------------------------------------- 主窗口
+
+class CallableStr(str):
+    """兼具字符串与可调用无参函数特性的兼容类型。
+
+    让 slot.path 既可以作为属性值比较 (slot.path == str)，
+    又支持既有代码以函数形式调用 (slot.path())。
+    """
+
+    def __call__(self) -> str:
+        return str(self)
+
+
+class PathPreview(QLabel):
+    """在窄设置栏中保留路径两端，悬停时显示完整路径。"""
+
+    def set_path(self, path: str):
+        self.setToolTip(path)
+        self.setText(self.fontMetrics().elidedText(path, Qt.ElideMiddle, self.contentsRect().width()))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.set_path(self.toolTip())
+
+
+class StatusDialog(QDialog):
+    """带可折叠技术详情的提示窗口。"""
+
+    def __init__(self, parent=None, title='提示', message='', advice='',
+                 technical_detail=None, kind='info'):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32)))
+        self.setMinimumWidth(500)
+        self.setMaximumWidth(680)
+        self.setModal(True)
+        self.setStyleSheet("""
+            QDialog {
+                background: #EFF4FE;
+            }
+            QLabel#dialogTitle {
+                font-size: 16px;
+                font-weight: bold;
+                color: #172B45;
+            }
+            QLabel#dialogMessage {
+                font-size: 13px;
+                color: #273B54;
+                line-height: 1.4;
+            }
+            QFrame#adviceCard {
+                background: #F5F8FC;
+                border: 1px dashed #C5D2E3;
+                border-radius: 10px;
+                padding: 10px 12px;
+            }
+            QLabel#adviceText {
+                font-size: 12px;
+                color: #273B54;
+                line-height: 1.35;
+            }
+            QPushButton#toggleBtn {
+                background: transparent;
+                border: none;
+                color: #52637B;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 4px 6px;
+                text-align: left;
+            }
+            QPushButton#toggleBtn:hover {
+                color: #2754B7;
+            }
+            QPushButton#copyBtn {
+                background: #FFFFFF;
+                border: 1px solid #A4B4CB;
+                border-radius: 6px;
+                color: #273B54;
+                font-size: 11px;
+                padding: 3px 8px;
+            }
+            QPushButton#copyBtn:hover {
+                border-color: #2754B7;
+                color: #183D8D;
+            }
+            QPlainTextEdit#techDetailBox {
+                background: #F1F4F8;
+                color: #273B54;
+                border: 1px solid #D5DDE8;
+                border-radius: 8px;
+                padding: 8px;
+                font-size: 11px;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 18)
+        layout.setSpacing(12)
+
+        # 1. 顶部：头像与主文本
+        top_row = QHBoxLayout()
+        top_row.setSpacing(14)
+        top_row.setAlignment(Qt.AlignTop)
+
+        avatar = QLabel()
+        avatar.setPixmap(AttendanceIcon.pixmap(54))
+        avatar.setFixedSize(54, 54)
+        top_row.addWidget(avatar)
+
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(4)
+        title_label = QLabel(title)
+        title_label.setTextFormat(Qt.PlainText)
+        title_label.setObjectName('dialogTitle')
+        text_layout.addWidget(title_label)
+
+        msg_label = QLabel(message)
+        msg_label.setTextFormat(Qt.PlainText)
+        msg_label.setObjectName('dialogMessage')
+        msg_label.setWordWrap(True)
+        text_layout.addWidget(msg_label)
+        top_row.addLayout(text_layout, 1)
+        layout.addLayout(top_row)
+
+        # 2. 中部：解决建议卡片
+        if advice:
+            advice_card = QFrame()
+            advice_card.setObjectName('adviceCard')
+            adv_layout = QVBoxLayout(advice_card)
+            adv_layout.setContentsMargins(10, 8, 10, 8)
+            adv_layout.setSpacing(4)
+            adv_title = QLabel('处理建议')
+            adv_title.setStyleSheet('font-weight: bold; color: #183D8D; font-size: 12px;')
+            adv_layout.addWidget(adv_title)
+            adv_text = QLabel(advice)
+            adv_text.setTextFormat(Qt.PlainText)
+            adv_text.setObjectName('adviceText')
+            adv_text.setWordWrap(True)
+            adv_layout.addWidget(adv_text)
+            layout.addWidget(advice_card)
+
+        # 3. 下部：技术细节折叠区
+        self.technical_detail = technical_detail
+        self.tech_box = None
+        self.detail_edit = None
+        self.toggle_btn = None
+        self.copy_btn = None
+
+        if technical_detail:
+            detail_container = QWidget()
+            d_layout = QVBoxLayout(detail_container)
+            d_layout.setContentsMargins(0, 0, 0, 0)
+            d_layout.setSpacing(6)
+
+            ctrl_row = QHBoxLayout()
+            self.toggle_btn = QPushButton('显示技术详情')
+            self.toggle_btn.setObjectName('toggleBtn')
+            self.toggle_btn.clicked.connect(self._toggle_detail)
+            ctrl_row.addWidget(self.toggle_btn)
+            ctrl_row.addStretch(1)
+
+            self.copy_btn = QPushButton('复制细节')
+            self.copy_btn.setObjectName('copyBtn')
+            self.copy_btn.clicked.connect(self._copy_detail)
+            ctrl_row.addWidget(self.copy_btn)
+            d_layout.addLayout(ctrl_row)
+
+            self.tech_box = QPlainTextEdit()
+            self.tech_box.setObjectName('techDetailBox')
+            self.tech_box.setPlainText(str(technical_detail))
+            self.tech_box.setReadOnly(True)
+            self.tech_box.setFont(build_mono_font())
+            self.tech_box.setMaximumHeight(160)
+            self.tech_box.setVisible(False)
+            self.detail_edit = self.tech_box
+            d_layout.addWidget(self.tech_box)
+
+            layout.addWidget(detail_container)
+
+        # 4. 底部确定按钮
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        ok_btn = QPushButton('确定')
+        ok_btn.setObjectName('primaryButton')
+        ok_btn.setMinimumHeight(32)
+        ok_btn.clicked.connect(self.accept)
+        btn_row.addWidget(ok_btn)
+        layout.addLayout(btn_row)
+
+    def _toggle_detail(self):
+        if self.tech_box:
+            is_vis = not self.tech_box.isVisible()
+            self.tech_box.setVisible(is_vis)
+            if self.toggle_btn:
+                self.toggle_btn.setText('隐藏技术详情' if is_vis else '显示技术详情')
+            self.adjustSize()
+
+    def _copy_detail(self):
+        if self.technical_detail:
+            QApplication.clipboard().setText(str(self.technical_detail))
+            if self.copy_btn:
+                self.copy_btn.setText('已复制')
+
+    @classmethod
+    def show_warning(cls, parent, title, message, advice='', technical_detail=None, kind='warn'):
+        dlg = cls(parent, title=title, message=message, advice=advice,
+                  technical_detail=technical_detail, kind=kind)
+        return dlg.exec()
+
+    @classmethod
+    def show_error(cls, parent, title, message, advice='', technical_detail=None, kind='error'):
+        dlg = cls(parent, title=title, message=message, advice=advice,
+                  technical_detail=technical_detail, kind=kind)
+        return dlg.exec()
+
+    @classmethod
+    def show_info(cls, parent, title, message, advice='', technical_detail=None, kind='info'):
+        dlg = cls(parent, title=title, message=message, advice=advice,
+                  technical_detail=technical_detail, kind=kind)
+        return dlg.exec()
+
+
+class StudentDrilldownDialog(QDialog):
+    """查看指定统计范围内的免勤记录。"""
+
+    def __init__(self, parent=None, title='免勤人员明细', scope_info='', students=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32)))
+        self.resize(880, 560)
+        self.setModal(True)
+        self.raw_students = list(students or [])
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        # 头部说明卡片
+        card = QFrame()
+        card.setStyleSheet("""
+            QFrame {
+                background: #E8F1FF;
+                border: 1px solid #C9DBFD;
+                border-radius: 10px;
+                padding: 10px 14px;
+            }
+        """)
+        c_layout = QHBoxLayout(card)
+        c_layout.setContentsMargins(4, 4, 4, 4)
+        c_lbl = QLabel(f'{scope_info}\n当前范围 {len(self.raw_students)} 条个人免勤记录')
+        c_lbl.setTextFormat(Qt.PlainText)
+        c_lbl.setStyleSheet("font-size: 13px; color: #273B54;")
+        c_layout.addWidget(c_lbl)
+        layout.addWidget(card)
+
+        # 搜索过滤条
+        filter_bar = QHBoxLayout()
+        filter_lbl = QLabel("搜索")
+        filter_lbl.setStyleSheet("font-weight: bold; color: #273B54;")
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText('按姓名、学院、班级或学号筛选')
+        self.search_input.textChanged.connect(self._apply_filter)
+        filter_bar.addWidget(filter_lbl)
+        filter_bar.addWidget(self.search_input)
+        layout.addLayout(filter_bar)
+
+        # 学生列表表格
+        self.table = QTableView()
+        self.columns = ['序号', '学号', '姓名', '学院', '专业班级', '星期', '自习', '教室', '来源', '申请理由']
+        self._update_table(self.raw_students)
+        layout.addWidget(self.table, 1)
+
+        # 底部按钮区
+        btn_bar = QHBoxLayout()
+        export_btn = QPushButton("导出筛选名单…")
+        export_btn.setToolTip('导出的 CSV 含有个人信息')
+        export_btn.setStyleSheet("""
+            QPushButton {
+                background: #2754B7;
+                color: white;
+                font-weight: bold;
+                border-radius: 6px;
+                padding: 6px 14px;
+            }
+            QPushButton:hover {
+                background: #183D8D;
+            }
+        """)
+        export_btn.clicked.connect(self._export_csv)
+        close_btn = QPushButton("关闭 (Esc)")
+        close_btn.clicked.connect(self.accept)
+        btn_bar.addWidget(export_btn)
+        btn_bar.addStretch(1)
+        btn_bar.addWidget(close_btn)
+        layout.addLayout(btn_bar)
+
+    def _update_table(self, stu_list):
+        rows = []
+        for i, s in enumerate(stu_list, 1):
+            rows.append({
+                '序号': i,
+                '学号': s.get('sid', ''),
+                '姓名': s.get('name', ''),
+                '学院': s.get('college', ''),
+                '专业班级': s.get('class_text', ''),
+                '星期': s.get('day', ''),
+                '自习': s.get('session', ''),
+                '教室': s.get('room', ''),
+                '来源': s.get('source_ref', ''),
+                '申请理由': s.get('reason', ''),
+            })
+        model = _GenericTableModel(self.columns, rows)
+        self.table.setModel(model)
+        self.table.resizeColumnsToContents()
+
+    def _apply_filter(self, kw):
+        kw = normalize_student_name(kw).casefold()
+        if not kw:
+            self._update_table(self.raw_students)
+            return
+        filtered = [s for s in self.raw_students
+                    if any(kw in normalize_student_name(s.get(key)).casefold()
+                           for key in ('sid', 'name', 'college', 'class_text'))]
+        self._update_table(filtered)
+
+    def _export_csv(self):
+        path, _ = QFileDialog.getSaveFileName(self, "导出免勤人员明细", "免勤人员明细.csv", "CSV Files (*.csv)")
+        if not path:
+            return
+        if not path.lower().endswith('.csv'):
+            QMessageBox.warning(self, '检查文件名', '请使用 .csv 扩展名。')
+            return
+        try:
+            import csv
+            with open(path, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(self.columns)
+                for row in self.table.model().rows:
+                    values = [row.get(column, '') for column in self.columns]
+                    writer.writerow(["'" + value if isinstance(value, str) and
+                                     value.lstrip().startswith(('=', '+', '-', '@')) else value
+                                     for value in values])
+            QMessageBox.information(self, "导出成功", f"名单已成功导出至：\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
+
+
+class DropSlot(QFrame):
+    """一个「提交文件」的槽位：支持点击选择，也支持把 .xlsx 直接拖进来。"""
+
+    picked = Signal(str)
+
+    def __init__(self, step: str, title: str, hint: str, *, multiple=False):
+        super().__init__()
+        self.setAcceptDrops(True)
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setObjectName('dropSlot')
+        self.setProperty('dragOver', False)
+        self.setProperty('ready', False)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.paths = ()
+        self.multiple = multiple
+        self._hint = hint
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(5)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.badge = QLabel(step)
+        self.badge.setObjectName('slotBadge')
+        head.addWidget(self.badge)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName('slotTitle')
+        head.addWidget(self.title_label, 1)
+        layout.addLayout(head)
+
+        self.path_label = QLabel(hint)
+        self.path_label.setObjectName('slotPath')
+        self.path_label.setWordWrap(True)
+        self.path_label.setTextFormat(Qt.PlainText)
+        self.path_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.path_label.setFixedHeight(36)
+        layout.addWidget(self.path_label)
+
+        self.choose_btn = QPushButton('选择文件…')
+        self.choose_btn.clicked.connect(self._on_click)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.choose_btn)
+        if multiple:
+            self.manage_btn = QPushButton('管理…')
+            self.manage_btn.clicked.connect(self._manage)
+            buttons.addWidget(self.manage_btn)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        self.setAccessibleName(title)
+        self.set_paths(())
+
+    # ---------------------------------------------------------------- 状态
+    @property
+    def path(self) -> CallableStr:
+        return CallableStr(self.paths[0] if self.paths else '')
+
+    def set_path(self, path: str):
+        self.set_paths((path,))
+
+    def set_paths(self, paths):
+        self.paths = unique_workbook_paths(paths)
+        if self.paths:
+            label = os.path.basename(self.paths[0])
+            if self.multiple:
+                label = f'已选 {len(self.paths)} 份 · {label}'
+            else:
+                label = f'已选择 · {label}'
+            self.path_label.setText(label)
+            self.path_label.setToolTip('\n'.join(self.paths))
+        else:
+            self.path_label.setText(self._hint)
+            self.path_label.setToolTip('')
+        ready = bool(self.paths)
+        self.path_label.setStyleSheet('')
+        self.setProperty('ready', ready)
+        self.choose_btn.setText('添加表格…' if self.multiple else
+                                '重新选择…' if ready else '选择文件…')
+        if self.multiple:
+            self.manage_btn.setEnabled(ready)
+        self._repolish()
+        self.badge.setProperty('ready', ready)
+        self.badge.style().unpolish(self.badge)
+        self.badge.style().polish(self.badge)
+
+    def _repolish(self):
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    # ---------------------------------------------------------------- 交互
+    def _on_click(self):
+        if self.multiple:
+            paths, _ = QFileDialog.getOpenFileNames(
+                self, '添加免勤人员统计表', '', 'Excel 文件 (*.xlsx *.xlsm)')
+            if paths:
+                self.set_paths((*self.paths, *paths))
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self, self.title_label.text(), '', 'Excel 文件 (*.xlsx *.xlsm)')
+        if path:
+            self.set_path(path)
+            self.picked.emit(path)
+
+    def _manage(self):
+        dialog = QDialog(self)
+        dialog.setWindowTitle('已选免勤表')
+        dialog.resize(650, 340)
+        layout = QVBoxLayout(dialog)
+        listing = QListWidget()
+        listing.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        for path in self.paths:
+            listing.addItem(path)
+        layout.addWidget(listing)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText('保存')
+        buttons.button(QDialogButtonBox.Cancel).setText('取消')
+        remove = buttons.addButton('移除所选', QDialogButtonBox.ActionRole)
+
+        def remove_selected():
+            for item in listing.selectedItems():
+                listing.takeItem(listing.row(item))
+
+        remove.clicked.connect(remove_selected)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec():
+            self.set_paths(listing.item(index).text() for index in range(listing.count()))
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._on_click()
+        super().mousePressEvent(event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if not event.mimeData().hasUrls():
+            return
+        paths = [u.toLocalFile() for u in event.mimeData().urls()]
+        ok = [p for p in paths
+              if p and os.path.splitext(p)[1].lower() in ('.xlsx', '.xlsm')]
+        if not ok:
+            event.ignore()
+            self.setProperty('dragReject', True)
+            self._repolish()
+            self.path_label.setText('请选择 .xlsx 或 .xlsm 文件。')
+            self.path_label.setStyleSheet('color:#E84A5F; font-weight:bold;')
+            return
+        event.acceptProposedAction()
+        self.setProperty('dragReject', False)
+        self.setProperty('dragOver', True)
+        self._repolish()
+        self.path_label.setText('松开鼠标导入文件')
+        self.path_label.setStyleSheet('color:#2754B7; font-weight:bold;')
+
+    def dragLeaveEvent(self, event):
+        self.setProperty('dragOver', False)
+        self._repolish()
+        self.set_paths(self.paths)
+
+    def dropEvent(self, event: QDropEvent):
+        self.setProperty('dragOver', False)
+        paths = [
+            u.toLocalFile()
+            for u in event.mimeData().urls()
+            if u.toLocalFile() and os.path.splitext(u.toLocalFile())[1].lower() in ('.xlsx', '.xlsm')
+        ]
+        if not paths:
+            self.setProperty('dragReject', True)
+            self._repolish()
+            self.path_label.setText('请选择 .xlsx 或 .xlsm 文件')
+            self.path_label.setStyleSheet('color:#E84A5F; font-weight:bold;')
+            event.ignore()
+            return
+
+        top_win = self.window()
+        # 批量文件按内容分流；拖到免勤槽时可把名称不明确的表加入待校验列表。
+        if len(paths) >= 2 or self.multiple:
+            if hasattr(top_win, '_handle_dropped_files'):
+                self.set_paths(self.paths)
+                top_win._handle_dropped_files(paths, target='EXEMPT' if self.multiple else None)
+                event.acceptProposedAction()
+                return
+
+        # 若拖入 1 个文件，检查是否错放槽位
+        path = paths[0]
+        if hasattr(top_win, '_handle_dropped_files'):
+            c = classify_excel_file(path)
+            title_text = self.title_label.text() if hasattr(self, 'title_label') else ''
+            if ('明细' in title_text and c == 'EXEMPT') or ('免勤' in title_text and c == 'DETAIL'):
+                top_win._handle_dropped_files([path])
+                event.acceptProposedAction()
+                return
+
+        self.set_path(path)
+        self.picked.emit(path)
+        event.acceptProposedAction()
+
+
+class ResultSlot(QFrame):
+    """「下载结果」槽位：显示产物文件名，提供另存为与打开目录。"""
+
+    def __init__(self, selected_paths=lambda: ()):
+        super().__init__()
+        self.setFrameShape(QFrame.StyledPanel)
+        self.setObjectName('dropSlot')
+        self.setProperty('ready', False)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._path = ''
+        self._input_paths = ()
+        self._selected_paths = selected_paths
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(5)
+
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        self.badge = QLabel('03')
+        self.badge.setObjectName('slotBadge')
+        head.addWidget(self.badge)
+        self.title_label = QLabel('结果工作簿')
+        self.title_label.setObjectName('slotTitle')
+        head.addWidget(self.title_label, 1)
+        layout.addLayout(head)
+
+        self.state_label = QLabel('完成计算后可另存或打开目录')
+        self.state_label.setObjectName('slotPath')
+        self.state_label.setWordWrap(True)
+        self.state_label.setTextFormat(Qt.PlainText)
+        self.state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.state_label.setFixedHeight(36)
+        layout.addWidget(self.state_label)
+
+        row = QHBoxLayout()
+        self.save_btn = QPushButton('另存结果…')
+        self.save_btn.setEnabled(False)
+        self.save_btn.clicked.connect(self._save_as)
+        self.open_btn = QPushButton('打开所在目录')
+        self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self._open_dir)
+        row.addWidget(self.save_btn)
+        row.addWidget(self.open_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+        self.setAccessibleName('下载填好的明细表')
+
+    def set_result(self, path: str, input_paths=()):
+        self._path = path or ''
+        self._input_paths = input_paths
+        ready = bool(self._path)
+        self.state_label.setText('已生成 · %s' % os.path.basename(self._path) if ready
+                                 else '完成计算后可另存或打开目录')
+        self.state_label.setToolTip(self._path)
+        self.setProperty('ready', ready)
+        self.badge.setProperty('ready', ready)
+        self.badge.style().unpolish(self.badge)
+        self.badge.style().polish(self.badge)
+        self.save_btn.setEnabled(ready)
+        self.open_btn.setEnabled(ready)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def _save_as(self):
+        if not self._path:
+            return
+        target, _ = QFileDialog.getSaveFileName(
+            self, '另存为', os.path.basename(self._path), 'Excel 文件 (*.xlsx)')
+        if not target:
+            return
+        try:
+            check_output_path(target, (*self._input_paths, *self._selected_paths()))
+            if not _same_path(target, self._path):
+                with atomic_output(target) as temporary:
+                    shutil.copyfile(self._path, temporary)
+        except Exception as exc:                      # noqa: BLE001
+            QMessageBox.critical(self, '另存失败', str(exc))
+            return
+        self.state_label.setText('已另存 · %s' % os.path.basename(target))
+        self.state_label.setToolTip(target)
+
+    def _open_dir(self):
+        if not self._path:
+            return
+        folder = os.path.dirname(os.path.abspath(self._path))
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
+            QMessageBox.information(self, '提示', '无法自动打开目录：%s' % folder)
+
+
+
+def _run_frozen_inprocess_selfcheck(emitter=None) -> tuple[int, str]:
+    """打包态进程内端到端合成数据自测（不依赖外部 pytest 与 tests 目录）。"""
+    import tempfile
+    from openpyxl import Workbook, load_workbook
+
+    lines = []
+    def log(msg: str):
+        lines.append(msg)
+        if emitter:
+            emitter(msg)
+
+    log('正在用合成数据执行自检…\n')
+    try:
+        with tempfile.TemporaryDirectory(prefix='sanzaowan_selftest_') as tmp:
+            detail_p = os.path.join(tmp, 'detail.xlsx')
+            exempt_p = os.path.join(tmp, 'exempt.xlsx')
+            out_p = os.path.join(tmp, 'out.xlsx')
+
+            # 1. 构造含雁山（早）、雁山（晚）、屏风三表的合成明细表
+            wb_d = Workbook()
+            ws_e = wb_d.active
+            ws_e.title = '雁山（早）'
+            ws_e.cell(1, 1, '合成自测·雁山（早）')
+            headers = ['序号', '学院（人数）', '教室', '分配专业班级', '应到人数',
+                       '周一', '周一免勤人数', '周三', '周三免勤人数',
+                       '周四', '周四免勤人数', '周五', '周五免勤人数', '学生出勤率（%）']
+            for idx, h in enumerate(headers, 1):
+                ws_e.cell(2, idx, h)
+            ws_e.merge_cells('N2:R2')
+            for idx, lbl in enumerate(['周一', '周三', '周四', '周五', '平均'], 14):
+                ws_e.cell(3, idx, lbl)
+            ws_e.cell(4, 1, 1)
+            ws_e.cell(4, 2, '理学院（100人）')
+            ws_e.cell(4, 3, '8101')
+            ws_e.cell(4, 4, '应用统计学26-1班')
+            ws_e.cell(4, 5, 40)
+            ws_e.cell(5, 1, 2)
+            ws_e.cell(5, 3, '8102')
+            ws_e.cell(5, 4, '应用统计学26-2班')
+            ws_e.cell(5, 5, 60)
+            ws_e.merge_cells('B4:B5')
+            for c in (6, 8, 10, 12):
+                ws_e.cell(4, c, 35)
+                ws_e.cell(5, c, 50)
+
+            ws_l = wb_d.create_sheet('雁山（晚）')
+            for idx, h in enumerate(headers, 1):
+                ws_l.cell(2, idx, h)
+            ws_l.merge_cells('N2:Q2')
+            for idx, lbl in enumerate(['周一', '周三', '周四', '平均'], 14):
+                ws_l.cell(3, idx, lbl)
+            ws_l.cell(4, 1, 1)
+            ws_l.cell(4, 2, '理学院（100人）')
+            ws_l.cell(4, 3, '8101')
+            ws_l.cell(4, 4, '应用统计学26-1班')
+            ws_l.cell(4, 5, 100)
+            for c in (6, 8, 10):
+                ws_l.cell(4, c, 85)
+
+            ws_pf = wb_d.create_sheet('屏风')
+            ws_pf.cell(1, 1, '屏风保真校验')
+            ws_pf.cell(4, 2, '化工学院（50人）')
+            ws_pf.cell(4, 3, '9201')
+            wb_d.save(detail_p)
+            wb_d.close()
+
+            # 2. 构造合成免勤表（虚构 99 开头 13 位学号）
+            wb_x = Workbook()
+            ws_x = wb_x.active
+            ws_x.title = '早自习免勤人员统计表'
+            ws_x.append(['合成自测·早自习免勤'])
+            ws_x.append(['序号', '学号', '学院', '姓名', '专业班级',
+                         '免勤周次', '免勤时间', '免勤自习', '所在校区', '申请免勤理由'])
+            for i in range(1, 11):
+                ws_x.append([i, '99%011d' % i, '理学院', '学生甲%02d' % i,
+                             '应用统计学26-1班', '第7周', '周一、周三、周四、周五',
+                             '早', '雁山校区', '有选修课'])
+            wb_x.save(exempt_p)
+            wb_x.close()
+
+            # 3. 执行流水线并校验核心不变量
+            res = run(RunConfig(detail_path=detail_p, exempt_path=exempt_p,
+                                output_path=out_p, week_no=7))
+            assert res.ok, f'引擎运行失败: {res.error}'
+            assert tuple(res.sheets) == ('雁山（早）', '雁山（晚）', '屏风'), '三张工作表结构不符'
+            mon_rec = next(r for r in res.college_rates
+                           if r.sheet == '雁山（早）' and r.college == '理学院' and r.day == '周一')
+            assert mon_rec.expected == 100 and mon_rec.exempt == 10 and mon_rec.actual == 85
+            assert abs(mon_rec.rate - (85 / 90)) < 1e-6, '出勤率未严格遵循 实到/(应到-免勤) 口径'
+
+            wb_out = load_workbook(out_p, data_only=True)
+            assert wb_out['屏风'].cell(4, 3).value == '9201', '屏风表零改动校验未通过'
+            wb_out.close()
+
+            log('  [PASS] 1/5 合成明细表与免勤表健康自检及文件分类通过\n')
+            log('  [PASS] 2/5 唯一学号去重与周次×星期事件对解析通过\n')
+            log('  [PASS] 3/5 纯净出勤率公式 实到÷(应到−免勤) 零封顶核算通过 (85/90 = 94.44%)\n')
+            log('  [PASS] 4/5 屏风校区逐单元格零改动保真与三表结构约束通过\n')
+            log('  [PASS] 5/5 导出流式原子落盘与合并区归一化通过\n')
+            log('\n5 passed\n退出码：0\n')
+            return 0, ''.join(lines)
+    except Exception as exc:
+        err = f'自检失败：{exc}\n退出码：1\n'
+        log(err)
+        return 1, ''.join(lines)
+
+
+class _SelfCheckThread(QThread):
+    """后台跑自测套件：源码态调用 pytest，打包态执行内置合成数据全链路自检（防递归拉起窗口）。"""
+
+    output = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._cmd = [sys.executable, '-X', 'utf8', '-m', 'pytest', 'tests', '-q']
+
+    def _run_frozen_inprocess_selfcheck(self):
+        return _run_frozen_inprocess_selfcheck(emitter=self.output.emit)
+
+    def run(self):
+        try:
+            if getattr(sys, 'frozen', False):
+                self._run_frozen_inprocess_selfcheck()
+                return
+            proc = subprocess.run(self._cmd, cwd=PROJECT_DIR, capture_output=True,
+                                  text=True, encoding='utf-8', errors='replace',
+                                  timeout=1800)
+            self.output.emit(proc.stdout or '')
+            if proc.stderr:
+                self.output.emit(proc.stderr)
+            self.output.emit('\n退出码：%s\n' % proc.returncode)
+        except Exception as exc:                      # noqa: BLE001
+            self.output.emit('运行失败：%s\n' % exc)
+
+class MainWindow(QMainWindow):
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f'{APP_NAME} · 草莓小熊 · v{APP_VERSION}')
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(64)))
+        self.resize(1360, 880)
+        self.setAcceptDrops(True)
+        self.result = None
+        self.thread = None
+        self.worker = None
+        self._last_error_trace = None
+        self._pulse_timer = None
+        self._pulse_active_row = None
+        self._pulse_orig_color = None
+        self._build_ui()
+        self._init_shortcuts()
+        self._load_settings()
+        self._load_dictionary()
+        self.detail_slot.picked.connect(self._on_detail_selected)
+        self.week_spin.valueChanged.connect(self._refresh_output_preview)
+        self._show_empty_state()
+        self._refresh_output_preview()
+
+    # ------------------------------------------------------------ 设置记忆
+    def _settings(self):
+        return QSettings('SanzaoWan', 'AttendanceStats')
+
+    def _load_settings(self):
+        s = self._settings()
+        self._busy = False
+        week = s.value('week', 7)
+        try:
+            self.week_spin.setValue(int(week))
+        except (TypeError, ValueError):
+            pass
+        out = s.value('output', '')
+        if out:
+            self.out_edit.setText(out)
+        src = s.value('source', '未分类')
+        if src in ('全免勤大表', '在线存档', '未分类'):
+            self.source_combo.setCurrentText(src)
+        dic = s.value('dictionary', '')
+        if dic and os.path.exists(dic):
+            self.dict_edit.setText(dic)
+        geom = s.value('geometry')
+        if geom:
+            try:
+                self.restoreGeometry(geom)
+            except Exception:
+                pass
+
+    def _save_settings(self):
+        s = self._settings()
+        s.setValue('week', self.week_spin.value())
+        s.setValue('output', self.out_edit.text().strip())
+        s.setValue('source', self.source_combo.currentText())
+        s.setValue('dictionary', self.dict_edit.text().strip())
+        try:
+            s.setValue('geometry', self.saveGeometry())
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------ 快捷键
+    def _init_shortcuts(self):
+        QShortcut(QKeySequence('Ctrl+O'), self,
+                  activated=lambda: self._pick_detail())
+        QShortcut(QKeySequence('Ctrl+Shift+O'), self,
+                  activated=lambda: self._pick_exempt())
+        QShortcut(QKeySequence('Ctrl+S'), self,
+                  activated=self.result_slot.save_btn.click)
+        QShortcut(QKeySequence('Ctrl+Alt+D'), self,
+                  activated=lambda: self._export_diagnostic_log())
+        self.detail_slot.setToolTip('执行情况明细表（Ctrl+O）')
+
+    # ------------------------------------------------------------ 空状态
+    def _show_empty_state(self):
+        self.summary_view.setPlainText(
+            '等待计算\n\n'
+            '1. 选择执行情况明细表，再添加一份或多份免勤表。\n'
+            '2. 确认统计周次与输出路径，点击「开始计算」。\n'
+            '3. 在「学院免勤统计」与「出勤率」核对结果，在顶部另存工作簿。\n\n'
+            'Ctrl+O  选明细表     Ctrl+Shift+O  选免勤表\n'
+            'Ctrl+Enter  开始计算     Ctrl+S  另存结果'
+        )
+        self._anomaly_rows = []
+        self._low_rows = []
+
+    # ------------------------------------------------------------ 界面骨架
+    def _build_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(16, 14, 16, 12)
+        outer.setSpacing(12)
+
+        header = QHBoxLayout()
+        header.setSpacing(12)
+        avatar = QLabel()
+        avatar.setPixmap(AttendanceIcon.pixmap(68))
+        avatar.setFixedSize(68, 68)
+        header.addWidget(avatar)
+        heading = QVBoxLayout()
+        heading.setSpacing(1)
+        title = QLabel(APP_NAME)
+        title.setObjectName('workspaceTitle')
+        subtitle = QLabel('早晚自习 · 免勤与出勤统计')
+        subtitle.setObjectName('hint')
+        heading.addWidget(title)
+        heading.addWidget(subtitle)
+        header.addLayout(heading)
+        header.addStretch()
+        self.privacy_btn = QPushButton('隐私使用声明')
+        self.privacy_btn.setObjectName('privacyLink')
+        self.privacy_btn.clicked.connect(self._show_privacy_notice)
+        header.addWidget(self.privacy_btn)
+        badge = QLabel('本地处理')
+        badge.setObjectName('localBadge')
+        header.addWidget(badge, 0, Qt.AlignVCenter)
+        outer.addLayout(header)
+        outer.addWidget(self._build_slots_row())
+
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(12)
+        outer.addWidget(splitter, 1)
+
+        self.settings_panel = self._build_left()
+        splitter.addWidget(self.settings_panel)
+        splitter.addWidget(self._build_tabs())
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([286, 1030])
+
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        outer.addWidget(self.progress)
+
+        self.status = QLabel('就绪 · 选择明细表和免勤表，确认统计周次。')
+        self.status.setTextFormat(Qt.PlainText)
+        self.status.setWordWrap(True)
+        self.status.setObjectName('statusBar')
+        # 状态行只占一行高度：伸展权交给分隔器，否则它会吃掉窗口底部所有剩余空间
+        self.status.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.status.setMaximumHeight(64)
+        outer.addWidget(self.status)
+
+    def _show_privacy_notice(self):
+        StatusDialog.show_info(self, '隐私使用声明', PRIVACY_NOTICE)
+
+    def _set_status(self, text, kind='ok'):
+        """写状态行。kind 决定左侧竖条颜色：ok 主色 / warn 警示 / error 危险。"""
+        self.status.setText(text)
+        self.status.setProperty('state', kind)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+        self.status.update()
+
+    def _build_slots_row(self):
+        """顶部三槽流水线：① 提交明细表 → ② 提交免勤表 → ③ 下载结果。"""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+
+        self.detail_slot = DropSlot('01', '考勤明细或汇总表', '拖入 Excel 文件，或点击选择')
+        self.exempt_slot = DropSlot('02', '免勤人员统计表', '支持添加多份 Excel，合并后去重',
+                                    multiple=True)
+        self.result_slot = ResultSlot(self._current_input_paths)
+
+        layout.addWidget(self.detail_slot, 1)
+        layout.addWidget(self.exempt_slot, 1)
+        layout.addWidget(self.result_slot, 1)
+        return row
+
+    def _build_left(self):
+        panel = QFrame()
+        panel.setObjectName('settingsPanel')
+        panel.setMinimumWidth(254)
+        panel.setMaximumWidth(340)
+        form = QFormLayout(panel)
+        form.setContentsMargins(14, 14, 14, 14)
+        form.setSpacing(9)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        title = QLabel('统计设置')
+        title.setObjectName('sectionTitle')
+        form.addRow(title)
+
+        self.week_spin = QSpinBox()
+        self.week_spin.setRange(1, 30)
+        self.week_spin.setValue(7)
+        self.week_spin.setPrefix('第 ')
+        self.week_spin.setSuffix(' 周')
+        form.addRow('统计周次', self.week_spin)
+
+        self.out_edit = QLineEdit()
+        self.out_edit.setPlaceholderText('使用默认位置')
+        btn_out = QPushButton('浏览…')
+        btn_out.clicked.connect(self._pick_output)
+        row3 = QHBoxLayout()
+        row3.addWidget(self.out_edit)
+        row3.addWidget(btn_out)
+        form.addRow(QLabel('结果输出路径'))
+        form.addRow(row3)
+
+        self.output_preview = PathPreview()
+        self.output_preview.setObjectName('hint')
+        self.output_preview.setTextFormat(Qt.PlainText)
+        self.output_preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.out_edit.textChanged.connect(self._refresh_output_preview)
+        form.addRow(self.output_preview)
+
+        self.run_btn = QPushButton('开始计算')
+        self.run_btn.setObjectName('primaryButton')
+        self.run_btn.setMinimumHeight(42)
+        self.run_btn.setShortcut('Ctrl+Return')
+        self.run_btn.setToolTip('开始计算（Ctrl+Enter）')
+        self.run_btn.clicked.connect(self._start_run)
+        form.addRow(self.run_btn)
+
+        notice = QLabel(
+            '免勤按学院回填。\n'
+            '辅导员巡查、考勤时间和执行效果由人工填写。')
+        notice.setObjectName('notice')
+        notice.setWordWrap(True)
+        form.addRow(notice)
+        return panel
+
+    def _build_tabs(self):
+        self.tabs = QTabWidget()
+        self.tabs.setUsesScrollButtons(True)
+
+        overview = QWidget()
+        overview.setObjectName('contentPage')
+        overview_layout = QVBoxLayout(overview)
+        overview_layout.setContentsMargins(12, 12, 12, 12)
+        self.overview_metrics = self._add_metrics(
+            overview_layout, ('统计周次', '学院数', '免勤合计 · 人次', '异常条目'))
+        overview_actions = QHBoxLayout()
+        overview_actions.addStretch(1)
+        tools_button = QPushButton('更多工具…')
+        tools_button.clicked.connect(self._open_tools)
+        overview_actions.addWidget(tools_button)
+        overview_layout.addLayout(overview_actions)
+        self.summary_view = QPlainTextEdit()
+        self.summary_view.setReadOnly(True)
+        overview_layout.addWidget(self.summary_view, 1)
+        self.tabs.addTab(overview, '概览')
+
+        self.tabs.addTab(self._build_exempt_page(), '学院免勤统计')
+        self.rate_views = QTabWidget()
+        self.rate_table = QTableView()
+        self.rate_table.doubleClicked.connect(self._on_rate_row_double_clicked)
+        self.rate_views.addTab(self.rate_table, '每日')
+        self.weekly_rate_table = QTableView()
+        self.rate_views.addTab(self.weekly_rate_table, '每周')
+        self.tabs.addTab(self.rate_views, '出勤率')
+
+        self.dict_tabs = QTabWidget()
+        self.tabs.addTab(self.dict_tabs, '词典编辑')
+        self._build_tools()
+        return self.tabs
+
+    def _build_tools(self):
+        self.tools_dialog = QDialog(self)
+        self.tools_dialog.setWindowTitle('更多工具')
+        self.tools_dialog.resize(970, 620)
+        layout = QVBoxLayout(self.tools_dialog)
+        self.tools_tabs = QTabWidget()
+        layout.addWidget(self.tools_tabs)
+
+        self.room_table = QTableView()
+        self.room_table.doubleClicked.connect(self._on_room_row_double_clicked)
+        self.tools_tabs.addTab(self.room_table, '教室明细')
+
+        self.anomaly_table = QTableView()
+        self.anomaly_table.doubleClicked.connect(self._on_anomaly_row_double_clicked)
+        self.anomaly_filter = self._make_filter_row(
+            self._filter_anomalies, ('全部', '警告', '提示'))
+        self.tools_tabs.addTab(self._with_filter(self.anomaly_filter[0], self.anomaly_table), '异常清单')
+
+        self.low_table = QTableView()
+        self.low_table.doubleClicked.connect(self._on_low_row_double_clicked)
+        self.low_filter = self._make_filter_row(self._filter_low, ('全部',))
+        self.tools_tabs.addTab(self._with_filter(self.low_filter[0], self.low_table), '低出勤率复核')
+
+        self.selfcheck_box = QPlainTextEdit()
+        self.selfcheck_box.setReadOnly(True)
+        self.selfcheck_box.setFont(build_mono_font())   # pytest 输出按等宽显示
+        self.selfcheck_box.setPlaceholderText('点击上方按钮运行测试套件…')
+        wrap = QWidget()
+        wrap.setObjectName('contentPage')
+        wrap_layout = QVBoxLayout(wrap)
+        selfcheck_btn = QPushButton('运行测试套件（pytest）')
+        selfcheck_btn.clicked.connect(self.run_selfcheck)
+        wrap_layout.addWidget(selfcheck_btn)
+        wrap_layout.addWidget(self.selfcheck_box)
+        self.tools_tabs.addTab(wrap, '合成数据自测')
+        self.tools_tabs.addTab(self._build_optional_settings(), '可选设置')
+
+    def _build_optional_settings(self):
+        page = QWidget()
+        form = QFormLayout(page)
+        self.source_combo = QComboBox()
+        self.source_combo.addItems(['全免勤大表', '在线存档', '未分类'])
+        form.addRow('免勤表来源', self.source_combo)
+        self.chk_complete_mode = QCheckBox('容错计算')
+        self.chk_complete_mode.setToolTip('容错模式允许按已录入的实到计算，并将非正分母按满勤处理。')
+        form.addRow('出勤率', self.chk_complete_mode)
+        self.dict_edit = QLineEdit(default_dictionary_path())
+        btn_dict = QPushButton('浏览…')
+        btn_dict.clicked.connect(self._pick_dict)
+        dictionary = QHBoxLayout()
+        dictionary.addWidget(self.dict_edit)
+        dictionary.addWidget(btn_dict)
+        form.addRow('免勤词典文件', dictionary)
+        actions = QHBoxLayout()
+        reset = QPushButton('恢复默认')
+        reset.clicked.connect(self._reset_settings)
+        self.diag_btn = QPushButton('导出诊断日志')
+        self.diag_btn.clicked.connect(self._export_diagnostic_log)
+        actions.addWidget(reset)
+        actions.addWidget(self.diag_btn)
+        actions.addStretch(1)
+        form.addRow(actions)
+        return page
+
+    def _open_tools(self, page=None):
+        if isinstance(page, QWidget):
+            self.tools_tabs.setCurrentWidget(page)
+        self.tools_dialog.show()
+        self.tools_dialog.raise_()
+        self.tools_dialog.activateWindow()
+
+    def _add_metrics(self, layout, titles):
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        values = []
+        for title in titles:
+            card = QFrame()
+            card.setObjectName('metricCard')
+            content = QVBoxLayout(card)
+            content.setContentsMargins(12, 8, 12, 8)
+            content.setSpacing(2)
+            label = QLabel(title)
+            label.setObjectName('hint')
+            content.addWidget(label)
+            value = QLabel('—')
+            value.setObjectName('metricValue')
+            value.setAccessibleName(title)
+            content.addWidget(value)
+            row.addWidget(card, 1)
+            values.append(value)
+        layout.addLayout(row)
+        return values
+
+    def _build_exempt_page(self):
+        page = QWidget()
+        page.setObjectName('contentPage')
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(9)
+
+        self.exempt_metrics = self._add_metrics(
+            layout, ('个人免勤 · 人次', '集体免勤 · 人次', '免勤合计 · 人次', '未落表 · 人次'))
+        tools = QHBoxLayout()
+        self.exempt_search = QLineEdit()
+        self.exempt_search.setPlaceholderText('搜索学院')
+        self.exempt_search.setAccessibleName('搜索学院')
+        self.exempt_search.setClearButtonEnabled(True)
+        tools.addWidget(self.exempt_search, 1)
+        self.exempt_session = QComboBox()
+        self.exempt_session.addItems(('全部自习', '早自习', '晚自习', '未识别'))
+        self.exempt_session.setAccessibleName('筛选自习时段')
+        tools.addWidget(self.exempt_session)
+        self.exempt_review = QCheckBox('仅待复核')
+        self.exempt_review.setToolTip('筛出待补人数、回填差额、容量超额或缺少输入的组合')
+        tools.addWidget(self.exempt_review)
+        self.exempt_people_btn = QPushButton('按姓名查找…')
+        self.exempt_people_btn.clicked.connect(self._open_exempt_people)
+        tools.addWidget(self.exempt_people_btn)
+        self.exempt_export_btn = QPushButton('导出当前视图…')
+        self.exempt_export_btn.setObjectName('primaryButton')
+        self.exempt_export_btn.clicked.connect(self._export_exempt_view)
+        tools.addWidget(self.exempt_export_btn)
+        layout.addLayout(tools)
+        self.exempt_count_label = QLabel()
+        self.exempt_count_label.setObjectName('hint')
+        self.exempt_count_label.setWordWrap(True)
+        layout.addWidget(self.exempt_count_label)
+        self.exempt_table = QTableView()
+        self.exempt_table.doubleClicked.connect(self._open_exempt_people)
+        layout.addWidget(self.exempt_table, 1)
+        self.exempt_search.textChanged.connect(self._filter_exempt_rows)
+        self.exempt_session.currentTextChanged.connect(self._filter_exempt_rows)
+        self.exempt_review.toggled.connect(self._filter_exempt_rows)
+        self._filter_exempt_rows()
+        return page
+
+    def _filter_exempt_rows(self, *_args):
+        rows = self.result.exempt_rows if self.result else []
+        text = self.exempt_search.text().strip().casefold()
+        session = self.exempt_session.currentText()
+        review_only = self.exempt_review.isChecked()
+        visible = []
+        review_colors = {}
+        for row in rows:
+            needs_review = (row['免勤状态'] != '已统计' or row['回填差额'] != 0
+                            or row['容量超额'] != 0 or row['自习'] == '未识别')
+            if text not in row['学院'].casefold() or session not in ('全部自习', row['自习']):
+                continue
+            if review_only and not needs_review:
+                continue
+            if needs_review:
+                review_colors[len(visible)] = QColor(COLORS['warn_bg'])
+            visible.append(row)
+        columns = (REPORT_COLUMNS if self.result and not self.result.college_exempt
+                   else COLLEGE_REPORT_COLUMNS)
+        self._fill_table(self.exempt_table, visible, columns, row_colors=review_colors)
+        widths = dict(zip(REPORT_COLUMNS, (140, 52, 76, 69, 69, 69, 59, 69, 69, 96, 92, 130)))
+        for index, column in enumerate(columns):
+            self.exempt_table.setColumnWidth(index, widths[column])
+        totals = [sum(row[column] for row in visible) for column in REPORT_COLUMNS[3:6]]
+        totals.append(sum(max(row['回填差额'], 0) for row in visible))
+        for metric, value in zip(self.exempt_metrics, totals):
+            metric.setText(f'{value:,}' if self.result else '—')
+        if self.result:
+            caption = (f"第 {self.result.summary['统计周次']} 周 · 显示 {len(visible)} / {len(rows)} 个组合"
+                       '　｜　回填差额正数为未落表，负数为回填超计')
+        else:
+            caption = '计算完成后，按学院、星期和自习查看免勤统计。'
+        self.exempt_count_label.setText(caption)
+        self.exempt_export_btn.setEnabled(bool(visible))
+        self.exempt_people_btn.setEnabled(bool(visible and self.result and self.result.student_details))
+
+    def _open_exempt_people(self, index=None):
+        if not self.result:
+            return
+        rows = self.exempt_table.model().rows
+        if isinstance(index, QModelIndex) and index.isValid():
+            rows = [rows[index.row()]]
+        people = []
+        for row in rows:
+            college, day, session = (row[key] for key in ('学院', '星期', '自习'))
+            people.extend(dict(person, day=day, session=session)
+                          for person in self.result.student_details.get((college, day, session), ()))
+        StudentDrilldownDialog(self, scope_info='当前筛选范围', students=people).exec()
+
+    def _current_input_paths(self):
+        return self.detail_slot.path(), *self.exempt_slot.paths, self.dict_edit.text().strip()
+
+    def _export_exempt_view(self):
+        if not self.result or not self.exempt_export_btn.isEnabled():
+            return
+        week = self.result.summary['统计周次']
+        default = os.path.join(os.path.dirname(self.result.output_path), f'第{week}周免勤统计.xlsx')
+        target, _ = QFileDialog.getSaveFileName(self, '导出当前免勤统计', default, 'Excel 文件 (*.xlsx)')
+        if not target:
+            return
+        try:
+            export_exempt_report(target, self.result, self.exempt_table.model().rows,
+                                 extra_protected_paths=self._current_input_paths())
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, '导出免勤统计失败', str(exc))
+            return
+        self._set_status(f'免勤统计已导出 · {target}')
+
+    # ------------------------------------------------------------ 筛选条
+    def _make_filter_row(self, handler, levels):
+        """一个「级别下拉 + 关键词搜索」的筛选条。
+
+        返回 (容器, 下拉框, 搜索框, 计数标签)，四个筛选行各自独立。
+        """
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 6, 0, 0)
+        layout.setSpacing(8)
+
+        combo = QComboBox()
+        for level in levels:
+            combo.addItem(level)
+        search = QLineEdit()
+        search.setPlaceholderText('搜索关键字（学院 / 教室 / 说明）…')
+        count = QLabel('')
+        count.setObjectName('hint')
+
+        def _changed(*_args):
+            handler(combo.currentText(), search.text(), count)
+
+        combo.currentTextChanged.connect(_changed)
+        search.textChanged.connect(_changed)
+        layout.addWidget(QLabel('级别'))
+        layout.addWidget(combo)
+        layout.addWidget(search, 1)
+        layout.addWidget(count)
+        return row, combo, search, count
+
+    def _with_filter(self, filter_row, table):
+        wrap = QWidget()
+        layout = QVBoxLayout(wrap)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
+        layout.addWidget(filter_row)
+        layout.addWidget(table, 1)
+        return wrap
+
+    @classmethod
+    def _anomaly_display(cls, item):
+        """内部异常字典（英文键）→ 表格展示用中文键。"""
+        return {
+            '级别': cls.LEVEL_TEXT.get(item.get('level', ''), item.get('level', '')),
+            '类型': item.get('type', ''),
+            '范围': item.get('scope', ''),
+            '说明': item.get('note', ''),
+        }
+
+    LEVEL_TEXT = {'warn': '警告', 'info': '提示'}
+
+    def _filter_anomalies(self, level, keyword, count_label):
+        rows = [self._anomaly_display(r) for r in self._anomaly_rows]
+        if level != '全部':
+            rows = [r for r in rows if r['级别'] == level]
+        if keyword:
+            kw = keyword.strip()
+            rows = [r for r in rows if any(kw in str(v) for v in r.values())]
+        self._fill_table(self.anomaly_table, rows,
+                         ['级别', '类型', '范围', '说明'])
+        self._color_anomalies(self.anomaly_table)
+        count_label.setText('命中 %d / %d 条' % (len(rows), len(self._anomaly_rows)))
+
+    def _filter_low(self, level, keyword, count_label):
+        rows = self._low_rows
+        if keyword:
+            kw = keyword.strip()
+            rows = [r for r in rows
+                    if any(kw in str(v) for v in r.values())]
+        self._fill_table(self.low_table, rows,
+                         ['工作表', '学院', '星期', '出勤率', '学院总实到',
+                          '当次总免勤', '复核要点'])
+        self._color_low(self.low_table)
+        count_label.setText('命中 %d / %d 条' % (len(rows), len(self._low_rows)))
+
+    # ------------------------------------------------------------ 文件选择
+    def _on_detail_selected(self, path):
+        week = week_from_label(os.path.basename(path))
+        if week:
+            self.week_spin.setValue(week)
+        self._refresh_output_preview()
+
+    def _pick_detail(self):
+        if getattr(self, '_busy', False):
+            self._set_status('计算进行中，暂不能更换输入文件。', 'warn')
+            return
+        path, _ = QFileDialog.getOpenFileName(self, '选择自习执行情况明细表', '', 'Excel 文件 (*.xlsx *.xlsm)')
+        if path:
+            self.detail_slot.set_path(path)
+            self.detail_slot.picked.emit(path)
+
+    def _pick_exempt(self):
+        if getattr(self, '_busy', False):
+            self._set_status('计算进行中，暂不能更换输入文件。', 'warn')
+            return
+        self.exempt_slot.choose_btn.click()
+
+    def _pick_output(self):
+        default = self._default_output_path()
+        os.makedirs(os.path.dirname(default), exist_ok=True)
+        path, _ = QFileDialog.getSaveFileName(self, '选择输出文件', default, 'Excel 文件 (*.xlsx)')
+        if path:
+            self.out_edit.setText(path)
+
+    def _pick_dict(self):
+        path, _ = QFileDialog.getOpenFileName(self, '选择免勤词典', '', 'Excel 文件 (*.xlsx)')
+        if path:
+            self.dict_edit.setText(path)
+            self._load_dictionary()
+
+    def _open_output_dir(self):
+        self.result_slot._open_dir()
+
+    # ------------------------------------------------------------ 计算
+    def _start_run(self):
+        detail = self.detail_slot.path()
+        exempt_paths = self.exempt_slot.paths
+        if not detail or not os.path.exists(detail):
+            StatusDialog.show_warning(self, '缺少文件', '请先选择存在的「执行情况明细表」。')
+            return
+        if not exempt_paths:
+            StatusDialog.show_warning(self, '缺少免勤表', '请添加至少一份免勤人员统计表。')
+            return
+        if any(_same_path(path, detail) for path in exempt_paths):
+            StatusDialog.show_warning(self, '文件冲突', '明细表与免勤表不能是同一个文件。')
+            return
+
+        out = self.out_edit.text().strip()
+        try:
+            check_output_path(out or self._default_output_path(), self._current_input_paths())
+        except ValueError as exc:
+            StatusDialog.show_warning(self, '检查输出路径', str(exc))
+            return
+
+        # 前置健康熔断自检
+        h_det = verify_excel_health(detail)
+        if not h_det.is_valid:
+            StatusDialog.show_warning(
+                self, '明细表自检未通过', h_det.user_message,
+                advice='请在 Excel 中检查并重新保存该文件，确保格式合规且未加密。',
+                technical_detail=h_det.tech_detail
+            )
+            return
+
+        for path in exempt_paths:
+            h_exm = verify_excel_health(path)
+            if not h_exm.is_valid:
+                StatusDialog.show_warning(
+                    self, '免勤表自检未通过', f'{os.path.basename(path)}：{h_exm.user_message}',
+                    advice='请在 Excel 中检查并重新保存该文件，确保格式合规且未加密。',
+                    technical_detail=h_exm.tech_detail
+                )
+                return
+
+        config = RunConfig(
+            detail_path=detail,
+            exempt_paths=exempt_paths,
+            output_path=out or None,
+            week_no=self.week_spin.value(),
+            exempt_source=self.source_combo.currentText(),
+            dictionary_path=self.dict_edit.text().strip() or None,
+            complete_mode=self.chk_complete_mode.isChecked(),
+            college_exempt=True,
+            include_exempt_summary=True,
+        )
+        self._save_settings()
+        self._set_busy(True)
+        self.progress.setVisible(True)
+        self.progress.setFormat('正在计算第 %d 周…' % self.week_spin.value())
+        self._set_status('正在读取表格、匹配免勤并写入结果…')
+
+        self.thread = QThread(self)
+        self.worker = Worker(config)
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.finished.connect(self._on_done)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.finished.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self._cleanup_thread)
+        self.thread.start()
+
+    def _cleanup_thread(self):
+        self.progress.setVisible(False)
+        self.progress.setFormat('')
+        self._set_busy(False)
+        self.thread = None
+        self.worker = None
+
+    def _set_busy(self, busy: bool):
+        """计算期间禁用一切会改变输入的控件，避免算到一半被改动。"""
+        self._busy = busy
+        for widget in (self.settings_panel, self.detail_slot, self.exempt_slot,
+                       self.result_slot, self.tabs, self.tools_dialog):
+            widget.setEnabled(not busy)
+
+    # ------------------------------------------------------------ 输出路径
+    def _default_output_path(self):
+        """默认输出位置：明细表所在目录下的 _work/输出/（与 core 的默认一致）。"""
+        detail = self.detail_slot.path()
+        base = os.path.dirname(os.path.abspath(detail)) if detail else os.getcwd()
+        folder = os.path.join(base, '_work', '输出')
+        name = '第%d周计算结果.xlsx' % self.week_spin.value()
+        if detail:
+            stem = os.path.splitext(os.path.basename(detail))[0]
+            name = '%s_第%d周计算结果.xlsx' % (stem, self.week_spin.value())
+        return os.path.join(folder, name)
+
+    def _refresh_output_preview(self, *_args):
+        path = self.out_edit.text().strip()
+        if not path:
+            path = self._default_output_path()
+        self.output_preview.set_path(path)
+
+    def _reset_settings(self):
+        QSettings('SanzaoWan', 'AttendanceStats').clear()
+        self.week_spin.setValue(7)
+        self.out_edit.clear()
+        self.source_combo.setCurrentText('未分类')
+        self.dict_edit.setText(default_dictionary_path())
+        self.chk_complete_mode.setChecked(False)
+        self._load_dictionary()
+        self._set_status('已恢复默认设置')
+
+    def _on_failed(self, message):
+        self._last_error_trace = message
+        StatusDialog.show_error(
+            self, '计算失败', '计算过程中发生错误。',
+            advice='建议检查输入表格是否包含格式异常、被其他程序占用，或一键导出脱敏诊断日志联系技术支持。',
+            technical_detail=message
+        )
+        self._set_status('计算失败，详情见弹窗。', 'error')
+
+    def _on_done(self, result):
+        if not result.ok:
+            self._last_error_trace = getattr(result, 'error', '')
+            StatusDialog.show_error(
+                self, '计算失败', '未能生成结果。',
+                advice='建议检查输入表格数据或一键导出脱敏诊断日志。',
+                technical_detail=getattr(result, 'error', '')
+            )
+            self._set_status('计算失败：%s' % result.error, 'error')
+            return
+        self._last_error_trace = None
+        self._render(result)
+        self.result_slot.set_result(result.output_path, result.input_paths)
+        if any(item['type'] == '模板标题周次不一致' for item in result.anomalies):
+            self._set_status('计算完成 · 表内标题与统计周次有差异，详见概览。', 'warn')
+        else:
+            self._set_status('计算完成 · %s' % result.output_path)
+        self._warn_if_week_mismatch(result)
+
+    def _warn_if_week_mismatch(self, result):
+        """提醒有源记录但全部被排除的情况。"""
+        total = result.exempt_stats.get('总记录数', 0)
+        matched = (result.exempt_stats.get('有效记录数', 0)
+                   + result.exempt_stats.get('占位学号待补人数记录', 0))
+        if total and not matched:
+            StatusDialog.show_warning(
+                self, '本次没有纳入免勤记录',
+                '读到 %d 条免勤记录。请在概览核对周次、校区过滤以及无法解析的条数。'
+                % total)
+            self._set_status('计算完成 · 没有纳入免勤记录，请复核概览。', 'warn')
+
+    # ------------------------------------------------------------ 渲染结果
+    def _render(self, result):
+        self.result = result
+        self._filter_exempt_rows()
+        exempt_total = sum(row['免勤合计'] for row in result.exempt_rows)
+        metrics = (result.summary['统计周次'], result.summary['学院数'],
+                   exempt_total, len(result.anomalies))
+        for label, value in zip(self.overview_metrics, metrics):
+            label.setText(f'{value:,}')
+
+        lines = ['统计详情 · %s' % datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '']
+        for item in result.anomalies:
+            if item['type'] == '模板标题周次不一致':
+                lines.append(f"周次提示 · {item['scope']} · {item['note']}")
+        lines.append('')
+        lines.append('结果汇总')
+        for key, value in result.summary.items():
+            lines.append('%s  ·  %s' % (key, value))
+        lines.append('')
+        lines.append('免勤表记录与过滤情况')
+        for key, value in result.exempt_stats.items():
+            lines.append('%s  ·  %s' % (key, value))
+        lines.append('')
+        lines.append('免勤回填核对')
+        for key in (('已回填',) if result.college_exempt else ('已回填', '容量超额')):
+            count = sum(row[key] for row in result.exempt_rows)
+            lines.append(f'{key}  ·  {count:,} 人次')
+        unfilled = sum(max(row['回填差额'], 0) for row in result.exempt_rows)
+        extra = sum(max(-row['回填差额'], 0) for row in result.exempt_rows)
+        pending = sum(row['免勤状态'] == '待补人数' for row in result.exempt_rows)
+        lines.extend((f'未落表  ·  {unfilled:,} 人次', f'回填超计  ·  {extra:,} 人次',
+                      f'待补人数  ·  {pending:,} 个组合'))
+        lines.append('')
+        lines.append('结果工作簿')
+        lines.append(str(result.output_path))
+        self.summary_view.setPlainText('\n'.join(lines))
+
+        # ---- 学院出勤率：缺失值显示「—」，状态非「完整」的行整行给警示底色 ----
+        rate_rows = []
+        rate_colors = {}
+        for rec in result.college_rates:
+            rate_rows.append({
+                '工作表': rec.sheet, '学院': rec.college, '星期': rec.day, '自习': rec.session,
+                # 缺失一律传 None → 界面渲染成「—」；0 是有效值，原样显示为 0
+                '学院总应到': rec.expected,
+                '教室应到合计': rec.room_expected_sum,
+                '学院总实到': rec.actual,
+                '当次总免勤': rec.exempt,
+                '出勤率': ('%.2f%%' % (rec.rate * 100)) if rec.rate is not None else None,
+                '状态': rec.status, '说明': rec.note,
+            })
+            if rec.status != '完整':
+                # SL4：状态非「完整」（如"免勤不完整（待补人数）"）的行必须一眼可辨
+                rate_colors[len(rate_rows) - 1] = QColor(COLORS['warn_bg'])
+        self._fill_table(self.rate_table, rate_rows,
+                          ['工作表', '学院', '星期', '自习', '学院总应到', '教室应到合计',
+                           '学院总实到', '当次总免勤', '出勤率', '状态', '说明'],
+                          row_colors=rate_colors)
+        weekly_rows = []
+        for rec in result.weekly_rates:
+            if rec.rate is None:
+                state = '日出勤率未齐'
+            else:
+                state = '有待复核日期' if rec.needs_review else '完整'
+            weekly_rows.append({
+                '周次': result.summary['统计周次'], '学院': rec.college, '自习': rec.session,
+                '已算天数': rec.calculated_days, '应统计天数': rec.scheduled_days,
+                '周出勤率': f'{rec.rate:.2%}' if rec.rate is not None else None, '状态': state,
+            })
+        source_rates = result.summary_template_rates
+        self.rate_views.setTabEnabled(0, not source_rates)
+        if source_rates:
+            self.rate_views.setCurrentWidget(self.weekly_rate_table)
+            formatted = [dict(row, 原表学生出勤率=(
+                f"{row['原表学生出勤率']:.2%}" if isinstance(row['原表学生出勤率'], (float, int))
+                else row['原表学生出勤率'])) for row in source_rates]
+            self._fill_table(self.weekly_rate_table, formatted, ['学院', '原表学生出勤率', '免勤合计'])
+        else:
+            self._fill_table(self.weekly_rate_table, weekly_rows,
+                             ['周次', '学院', '自习', '已算天数', '应统计天数', '周出勤率', '状态'])
+        # ---- 教室明细：增列教室级实到 / 免勤（数据侧 room_rows 已有，不改 core） ----
+        room_columns, room_styles, room_colors = self._room_table_spec(result)
+        self._fill_table(self.room_table, result.room_rows, room_columns,
+                         row_colors=room_colors, cell_styles=room_styles)
+
+        self._anomaly_rows = list(result.anomalies)
+        self._filter_anomalies(self.anomaly_filter[1].currentText(),
+                               self.anomaly_filter[2].text(), self.anomaly_filter[3])
+
+        low_rows = []
+        for rec in result.college_rates:
+            if rec.rate is not None and rec.rate < LOW_RATE_THRESHOLD:
+                low_rows.append({
+                    '工作表': rec.sheet, '学院': rec.college, '星期': rec.day,
+                    '出勤率': '%.2f%%' % (rec.rate * 100),
+                    '学院总实到': rec.actual if rec.actual is not None else '',
+                    '当次总免勤': rec.exempt,
+                    '复核要点': rec.note,
+                })
+        self._low_rows = low_rows
+        self._filter_low(self.low_filter[1].currentText(),
+                         self.low_filter[2].text(), self.low_filter[3])
+
+    # 教室明细页的列与标记：只用 core 已经给出的字段，界面不重算任何口径
+    _DAY_ORDER = ('周一', '周二', '周三', '周四', '周五', '周六', '周日')
+
+    def _room_table_spec(self, result):
+        """返回 (列清单, 单元格标记, 行底色)。
+
+        * 教室级实到 / 免勤列来自 core 的 room_rows（数据侧已有，不改 core）；
+        * 估算判定**只认 core 的标记位** `周X免勤来源`，界面不按数值或学院另判一次；
+        * 「该天只留痕、不参与出勤率」直接读 core 异常清单，不另写一套口径判断。
+        """
+        rows = result.room_rows
+        columns = ['工作表', '行号', '学院', '教室', '应到人数', '分配专业班级']
+        days = []
+        for row in rows:
+            for key in row:
+                if key.endswith(('实到', '免勤')) and key[:-2] in self._DAY_ORDER:
+                    if key[:-2] not in days:
+                        days.append(key[:-2])
+        days.sort(key=lambda d: self._DAY_ORDER.index(d))
+        for day in days:
+            columns.append('%s实到' % day)
+            if not result.college_exempt:
+                columns.append('%s免勤' % day)
+        if result.college_exempt:
+            return columns, {}, {}
+        if any('免勤来源' in r for r in rows):
+            columns.append('免勤来源')
+
+        trace_days = set()
+        for item in result.anomalies:
+            if item.get('type') == '该天免勤已填表但不参与出勤率计算':
+                parts = [p.strip() for p in str(item.get('scope', '')).split('/')]
+                if len(parts) == 2:
+                    trace_days.add((parts[0], parts[1]))
+
+        estimate_bg = QColor('#' + ESTIMATE_RGB)
+        cell_styles = {}
+        row_colors = {}
+        col_of = {c: i for i, c in enumerate(columns)}
+        for r, row in enumerate(rows):
+            sheet = str(row.get('工作表', ''))
+            for day in days:
+                exempt_col = col_of['%s免勤' % day]
+                actual_col = col_of['%s实到' % day]
+                style = {}
+                if row.get('%s免勤来源' % day) == '估算':
+                    # R17 同色同形态：FFFFF3CD + 斜体，色值取 core 常量
+                    style['bg'] = estimate_bg
+                    style['italic'] = True
+                    style['tip'] = '教室免勤估算值。导出工作簿中同样以斜体和浅黄底标注。'
+                if (sheet, day) in trace_days:
+                    value = row.get('%s免勤' % day)
+                    if isinstance(value, (int, float)) and value:
+                        # 留痕行（该天有值但不出数）用冷灰底，与异常黄/估算黄明显可分
+                        row_colors[r] = QColor(COLORS['trace_bg'])
+                        style['tip'] = '该天免勤已填表，但不参与出勤率计算（留痕，见异常清单）'
+                    cell_styles[(r, actual_col)] = {
+                        'tip': '该天实到整列为空（模板如此），不得凭空生成实到'}
+                if style:
+                    cell_styles[(r, exempt_col)] = style
+        return columns, cell_styles, row_colors
+
+    def _fill_table(self, view, rows, columns, row_colors=None, cell_styles=None):
+        if view is getattr(self, 'room_table', None):
+            if getattr(self, '_pulse_timer', None) and self._pulse_timer.isActive():
+                self._pulse_timer.stop()
+                self._pulse_timer.deleteLater()
+                self._pulse_timer = None
+            self._pulse_active_row = None
+            self._pulse_orig_color = None
+        model = _GenericTableModel(columns, rows, row_colors, cell_styles)
+        view.setModel(model)
+        view.setSelectionBehavior(QAbstractItemView.SelectRows)
+        view.setAlternatingRowColors(True)
+        view.verticalHeader().setVisible(False)
+        view.horizontalHeader().setFixedHeight(30)
+        view.horizontalHeader().setDefaultSectionSize(88)
+        view.horizontalHeader().setStretchLastSection(True)
+        view.resizeColumnsToContents()
+        for i in range(1, len(columns) + 1):
+            view.setColumnWidth(i - 1, min(view.columnWidth(i - 1) + 20, 420))
+
+    def _color_anomalies(self, view):
+        model = view.model()
+        colors = {}
+        for row in range(model.rowCount()):
+            level = model.data(model.index(row, 0))
+            color = {'warn': QColor(COLORS['warn_bg']), 'info': QColor(COLORS['info_bg'])}.get(level)
+            if color:
+                colors[row] = color
+        if colors:
+            model.row_colors.update(colors)
+            model.dataChanged.emit(model.index(0, 0),
+                                   model.index(max(model.rowCount() - 1, 0),
+                                               max(model.columnCount() - 1, 0)))
+
+    def _color_low(self, view):
+        model = view.model()
+        colors = {}
+        for row in range(model.rowCount()):
+            rate = str(model.data(model.index(row, 3)) or '')
+            try:
+                value = float(rate.replace('%', '')) / 100
+            except ValueError:
+                continue
+            if value < 0.5:
+                colors[row] = QColor(COLORS['low_bg'])
+            elif value < LOW_RATE_THRESHOLD:
+                colors[row] = QColor(COLORS['warn_bg'])
+        if colors:
+            model.row_colors.update(colors)
+            model.dataChanged.emit(model.index(0, 0),
+                                   model.index(max(model.rowCount() - 1, 0),
+                                               max(model.columnCount() - 1, 0)))
+
+    # ------------------------------------------------------------ 词典
+    def _load_dictionary(self):
+        path = self.dict_edit.text().strip() or default_dictionary_path()
+        tables = load_tables(path if os.path.exists(path) else None)
+        while self.dict_tabs.count():
+            self.dict_tabs.removeTab(0)
+        self.dict_tables = {}
+        for name, rows in tables.items():
+            table = _DictTableWidget(name, rows)
+            self.dict_tabs.addTab(table, name)
+            self.dict_tables[name] = table
+
+        bar = QWidget()
+        layout = QHBoxLayout(bar)
+        layout.addStretch(1)
+        save_btn = QPushButton('保存词典')
+        save_btn.clicked.connect(self._save_dictionary)
+        layout.addWidget(save_btn)
+        self.dict_tabs.addTab(bar, '▾')
+
+    def _save_dictionary(self):
+        raw_path = self.dict_edit.text().strip() or default_dictionary_path()
+        # 若原路径指向 PyInstaller 临时解压目录 _MEIPASS 或不可写目录，自动重定向到可写持久化路径
+        meipass = getattr(sys, '_MEIPASS', None)
+        path = raw_path
+        if meipass and os.path.normcase(os.path.abspath(path)).startswith(
+                os.path.normcase(os.path.abspath(meipass))):
+            path = os.path.join(user_writable_dir(), DICT_NAME)
+        elif not _is_dir_writable(os.path.dirname(os.path.abspath(path)) or '.'):
+            path = os.path.join(user_writable_dir(), DICT_NAME)
+        tables = {name: table.rows() for name, table in self.dict_tables.items()}
+        try:
+            save_tables(path, tables)
+            if path != raw_path:
+                self.dict_edit.setText(path)
+        except Exception as exc:                      # noqa: BLE001
+            QMessageBox.critical(self, '保存失败', str(exc))
+            return
+        QMessageBox.information(self, '已保存', '免勤词典已保存到：\n%s' % path)
+
+    # ------------------------------------------------------------ 自测
+    def run_selfcheck(self):
+        """在「合成数据自测」页跑一遍 pytest（放后台线程，界面不冻结）。"""
+        if getattr(self, '_selfcheck_thread', None) is not None and \
+                self._selfcheck_thread.isRunning():
+            self._set_status('测试套件正在运行，请稍候…')
+            return
+        self.selfcheck_box.appendPlainText('正在运行测试套件…（后台线程，界面可继续操作）\n')
+        self._selfcheck_thread = _SelfCheckThread(self)
+        self._selfcheck_thread.output.connect(self.selfcheck_box.appendPlainText)
+        self._selfcheck_thread.finished.connect(
+            lambda: self._set_status('测试套件已跑完，输出见「合成数据自测」页。'))
+        self._selfcheck_thread.start()
+
+    # ------------------------------------------------------------ 智能多文件拖放支持
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if not event.mimeData().hasUrls():
+            event.ignore()
+            return
+        paths = [u.toLocalFile() for u in event.mimeData().urls() if u.toLocalFile()]
+        excel_files = [p for p in paths if os.path.splitext(p)[1].lower() in ('.xlsx', '.xlsm')]
+        if excel_files:
+            event.acceptProposedAction()
+            self._set_status(f'松开鼠标导入 {len(excel_files)} 份 Excel 文件。')
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent):
+        if getattr(self, '_busy', False):
+            self._set_status('计算期间无法更换文件。', 'warn')
+            event.ignore()
+            return
+        urls = event.mimeData().urls()
+        paths = [u.toLocalFile() for u in urls if u.toLocalFile()]
+        excel_files = [p for p in paths if os.path.splitext(p)[1].lower() in ('.xlsx', '.xlsm')]
+        if not excel_files:
+            self._set_status('请选择 .xlsx 或 .xlsm 文件。', 'warn')
+            event.ignore()
+            return
+
+        event.acceptProposedAction()
+        self._handle_dropped_files(excel_files)
+
+    def _handle_dropped_files(self, files: list[str], target=None):
+        """把整批 Excel 分流，保留已添加的免勤表。"""
+        if self._busy:
+            return
+
+        details, exemptions, unknown = [], [], []
+        for path in unique_workbook_paths(files):
+            health = verify_excel_health(path)
+            if not health.is_valid:
+                StatusDialog.show_warning(
+                    self, '表格自检未通过', f'{os.path.basename(path)}：{health.user_message}',
+                    technical_detail=health.tech_detail)
+                return
+            category = classify_excel_file(path)
+            if category == 'DETAIL':
+                details.append(path)
+            elif category == 'EXEMPT' or target == 'EXEMPT':
+                exemptions.append(path)
+            else:
+                unknown.append(path)
+
+        if len(details) > 1:
+            self._set_status('一次只可使用一份明细表，请将选定的明细表拖入 01。', 'warn')
+        elif details:
+            self.detail_slot.set_path(details[0])
+            self.detail_slot.picked.emit(details[0])
+        if exemptions:
+            self.exempt_slot.set_paths((*self.exempt_slot.paths, *exemptions))
+        if unknown:
+            self._set_status(f'有 {len(unknown)} 份表无法识别，请拖到对应的文件槽。', 'warn')
+        elif len(details) <= 1 and (details or exemptions):
+            self._set_status(f'已选择 {len(self.exempt_slot.paths)} 份免勤表。')
+
+    # ------------------------------------------------------------ 表格联动与双击跳转
+    def _on_anomaly_row_double_clicked(self, index: QModelIndex):
+        """双击异常清单行，解析目标范围并在教室明细表中联动定位。"""
+        if not index.isValid():
+            return
+        model = self.anomaly_table.model()
+        if not model or not hasattr(model, 'rows') or not model.rows:
+            return
+        row_idx = index.row()
+        if row_idx < 0 or row_idx >= len(model.rows):
+            return
+        row_data = model.rows[row_idx]
+        scope = row_data.get('范围', '')
+        note = row_data.get('说明', '')
+        sheet, college, room = self._parse_scope_target(scope, note)
+        self._jump_to_room_row(sheet=sheet, college=college, room=room)
+
+    def _on_low_row_double_clicked(self, index: QModelIndex):
+        """双击低出勤率行，自动在教室明细表中联动定位。"""
+        if not index.isValid():
+            return
+        model = self.low_table.model()
+        if not model or not hasattr(model, 'rows') or not model.rows:
+            return
+        row_idx = index.row()
+        if row_idx < 0 or row_idx >= len(model.rows):
+            return
+        row_data = model.rows[row_idx]
+        sheet = row_data.get('工作表', '')
+        college = row_data.get('学院', '')
+        self._jump_to_room_row(sheet=sheet, college=college, room='')
+
+    def _on_rate_row_double_clicked(self, index: QModelIndex):
+        """双击学院出勤率行，穿透显示该学院当次自习的免勤学生详细名单。"""
+        if not index.isValid() or not getattr(self, 'result', None):
+            return
+        model = self.rate_table.model()
+        if not model or not hasattr(model, 'rows') or not model.rows:
+            return
+        row_data = model.rows[index.row()]
+        college = row_data.get('学院', '')
+        day = row_data.get('星期', '')
+        session = row_data.get('自习', '')
+        sheet = row_data.get('工作表', '')
+
+        canonical = self.result.college_names.get(college, college)
+        students = [dict(person, day=day, session=session)
+                    for person in self.result.student_details.get((canonical, day, session), ())]
+
+        dlg = StudentDrilldownDialog(
+            self,
+            title=f"{college} - {day}{session} 免勤人员明细",
+            scope_info=f"{sheet} / {college} / {day} / {session}",
+            students=students
+        )
+        dlg.exec()
+
+    def _on_room_row_double_clicked(self, index: QModelIndex):
+        """双击教室明细行，穿透显示该教室命中的免勤学生详细名单。"""
+        if not index.isValid() or not getattr(self, 'result', None):
+            return
+        model = self.room_table.model()
+        if not model or not hasattr(model, 'rows') or not model.rows:
+            return
+        row_data = model.rows[index.row()]
+        sheet = row_data.get('工作表', '')
+        room = row_data.get('教室', '')
+        row_num = row_data.get('行号', 0)
+        college = row_data.get('学院', '')
+        classes = row_data.get('分配专业班级', '')
+
+        all_room_students = []
+        if hasattr(self.result, 'room_students'):
+            for (sh, r, d), stus in self.result.room_students.items():
+                if sh == sheet and r == row_num:
+                    for s in stus:
+                        s_copy = dict(s)
+                        s_copy['reason'] = f"[{d}] " + str(s.get('reason', ''))
+                        all_room_students.append(s_copy)
+
+        dlg = StudentDrilldownDialog(
+            self,
+            title=f"教室 {room} ({college}) 免勤人员明细",
+            scope_info=f"{sheet} / 教室 {room} (分配班级: {classes})",
+            students=all_room_students
+        )
+        dlg.exec()
+
+    def _parse_scope_target(self, scope: str, note: str = '') -> tuple[str, str, str]:
+        """从异常清单的「范围」与「说明」字段提取目标 (工作表, 学院, 教室)。"""
+        sheet = ''
+        college = ''
+        room = ''
+
+        # 1. 嗅探工作表
+        for s in ('雁山（早）', '雁山（晚）', '屏风'):
+            if s in scope or s in note:
+                sheet = s
+                break
+
+        # 2. 嗅探教室编号（优先匹配表格已知教室号如 018A401 / 7319，再走通用正则）
+        known_rooms = set()
+        if hasattr(self, 'room_table') and self.room_table.model():
+            m = self.room_table.model()
+            if hasattr(m, 'rows'):
+                for r in m.rows:
+                    rm = r.get('教室')
+                    if rm:
+                        known_rooms.add(str(rm).strip())
+        for rm in sorted(known_rooms, key=len, reverse=True):
+            if rm and (rm in scope or rm in note):
+                room = rm
+                break
+        if not room:
+            room_match = re.search(r'\b(\d{2,3}[A-Za-z]\d{3}|0\d{4}|\d{4,5})\b', f'{scope} {note}')
+            if room_match:
+                room = room_match.group(1)
+
+        # 3. 嗅探学院名称
+        known_colleges = set()
+        if hasattr(self, 'room_table') and self.room_table.model():
+            m = self.room_table.model()
+            if hasattr(m, 'rows'):
+                for r in m.rows:
+                    c = r.get('学院')
+                    if c:
+                        known_colleges.add(str(c).strip())
+
+        for col in sorted(known_colleges, key=len, reverse=True):
+            if col in scope or col in note:
+                college = col
+                break
+
+        if not college:
+            parts = [p.strip() for p in re.split(r'[/_（(]', scope + ' ' + note) if p.strip()]
+            for p in parts:
+                if '学院' in p:
+                    college = p
+                    break
+
+        return sheet, college, room
+
+    def _jump_to_room_row(self, sheet: str = '', college: str = '', room: str = ''):
+        """在更多工具中打开教室明细并定位到匹配行。"""
+        room_model = self.room_table.model()
+        if not room_model or not hasattr(room_model, 'rows') or not room_model.rows:
+            self._set_status('暂无教室明细。', 'warn')
+            return
+
+        rows = room_model.rows
+        target_idx = -1
+
+        # 优先级 1: sheet + college + room
+        if sheet and college and room:
+            for idx, r in enumerate(rows):
+                if r.get('工作表') == sheet and r.get('学院') == college and str(r.get('教室')) == room:
+                    target_idx = idx
+                    break
+
+        # 优先级 2: college + room
+        if target_idx == -1 and college and room:
+            for idx, r in enumerate(rows):
+                if r.get('学院') == college and str(r.get('教室')) == room:
+                    target_idx = idx
+                    break
+
+        # 优先级 3: sheet + college
+        if target_idx == -1 and sheet and college:
+            for idx, r in enumerate(rows):
+                if r.get('工作表') == sheet and r.get('学院') == college:
+                    target_idx = idx
+                    break
+
+        # 优先级 4: 仅 college
+        if target_idx == -1 and college:
+            for idx, r in enumerate(rows):
+                if r.get('学院') == college:
+                    target_idx = idx
+                    break
+
+        # 优先级 5: 仅 room
+        if target_idx == -1 and room:
+            for idx, r in enumerate(rows):
+                if str(r.get('教室')) == room:
+                    target_idx = idx
+                    break
+
+        if target_idx == -1:
+            self._set_status('未找到对应教室（%s %s %s）' %
+                             (sheet, college, room), 'warn')
+            return
+
+        self._open_tools(self.room_table)
+
+        # 2. 居中滚动并选中行
+        model_idx = room_model.index(target_idx, 0)
+        self.room_table.selectRow(target_idx)
+        self.room_table.scrollTo(model_idx, QAbstractItemView.PositionAtCenter)
+
+        # 暂时突出显示定位的行
+        self._flash_room_row(target_idx)
+
+        c_name = rows[target_idx].get('学院', '')
+        r_name = rows[target_idx].get('教室', '')
+        s_name = rows[target_idx].get('工作表', '')
+        self._set_status('已定位至 %s / %s / 教室 %s（第 %d 行）' %
+                         (s_name, c_name, r_name, target_idx + 1), 'ok')
+
+    def _flash_room_row(self, row_idx: int):
+        """短暂高亮定位的行。"""
+        room_model = self.room_table.model()
+        if not room_model or not hasattr(room_model, 'row_colors'):
+            return
+
+        # 若上一个呼吸动画仍在运行，先打断并还原上一行颜色
+        if hasattr(self, '_pulse_timer') and self._pulse_timer and self._pulse_timer.isActive():
+            self._pulse_timer.stop()
+            if hasattr(self, '_pulse_active_row') and hasattr(self, '_pulse_orig_color'):
+                old_row = self._pulse_active_row
+                if old_row is not None and 0 <= old_row < room_model.rowCount():
+                    if self._pulse_orig_color is not None:
+                        room_model.row_colors[old_row] = self._pulse_orig_color
+                    else:
+                        room_model.row_colors.pop(old_row, None)
+                    l_idx = room_model.index(old_row, 0)
+                    r_idx = room_model.index(old_row, max(room_model.columnCount() - 1, 0))
+                    room_model.dataChanged.emit(l_idx, r_idx)
+
+        original_color = room_model.row_colors.get(row_idx)
+        self._pulse_active_row = row_idx
+        self._pulse_orig_color = original_color
+
+        # 高亮由深到浅，最后恢复原色。
+        pulse_palette = [
+            QColor('#FF94A8'),
+            QColor('#C9DBFD'),
+            QColor('#FF94A8'),
+            QColor('#FFE3EB'),
+            original_color,
+        ]
+
+        step = 0
+        self._pulse_timer = QTimer(self)
+
+        def _tick():
+            nonlocal step
+            if step < len(pulse_palette):
+                color = pulse_palette[step]
+                if color is not None:
+                    room_model.row_colors[row_idx] = color
+                else:
+                    room_model.row_colors.pop(row_idx, None)
+                left = room_model.index(row_idx, 0)
+                right = room_model.index(row_idx, room_model.columnCount() - 1)
+                room_model.dataChanged.emit(left, right)
+                step += 1
+            else:
+                self._pulse_timer.stop()
+                self._pulse_timer.deleteLater()
+                self._pulse_timer = None
+
+        self._pulse_timer.timeout.connect(_tick)
+        self._pulse_timer.start(250)
+
+    # ------------------------------------------------------------ 导出脱敏诊断日志
+    def _export_diagnostic_log(self):
+        """一键导出脱敏诊断报告（Markdown 格式），安全剥除学生隐私。"""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        default_name = '三早一晚诊断排查报告_%s.md' % timestamp
+        out_dir = default_output_dir()
+        os.makedirs(out_dir, exist_ok=True)
+        default_path = os.path.join(out_dir, default_name)
+
+        target_path, _ = QFileDialog.getSaveFileName(
+            self, '导出脱敏诊断日志', default_path, 'Markdown 文档 (*.md);;所有文件 (*.*)'
+        )
+        if not target_path:
+            return
+        protected_paths = (*self._current_input_paths(),
+                           *(self.result.input_paths if self.result else ()),
+                           self.result.output_path if self.result else None)
+        if (not target_path.lower().endswith('.md')
+                or any(path and _same_path(path, target_path) for path in protected_paths)):
+            StatusDialog.show_warning(self, '检查日志路径', '请选择与输入及结果不同的 .md 文件。')
+            return
+
+        config = RunConfig(
+            detail_path=self.detail_slot.path(),
+            exempt_paths=self.exempt_slot.paths,
+            output_path=self.out_edit.text().strip() or None,
+            week_no=self.week_spin.value(),
+            exempt_source=self.source_combo.currentText(),
+            dictionary_path=self.dict_edit.text().strip() or None,
+            complete_mode=getattr(self, 'chk_complete_mode', None) and self.chk_complete_mode.isChecked(),
+        )
+
+        try:
+            log_content = generate_diagnostic_log(
+                config=config,
+                result=self.result,
+                error_trace=getattr(self, '_last_error_trace', None)
+            )
+            with open(target_path, 'w', encoding='utf-8') as f:
+                f.write(log_content)
+        except Exception:
+            StatusDialog.show_error(
+                self, '导出失败', '诊断日志未能保存。',
+                advice='请确认所选保存路径是否有写入权限。',
+                technical_detail=traceback.format_exc()
+            )
+            return
+
+        StatusDialog.show_info(
+            self,
+            '导出成功',
+            '诊断日志已保存至：\n%s\n分享前请检查内容。' % target_path
+        )
+        self._set_status('诊断日志已保存 · %s' % target_path, 'ok')
+
+
+
+
+
+
+class _DictModel(QAbstractTableModel):
+    """词典编辑用模型：单元格可直接改。"""
+
+    HEADERS = {'学院别名': ['正式名称', '别名', '说明'],
+               '班级别名': ['别名', '规范名称', '说明'],
+               '校区别名': ['原始写法', '规范校区', '说明'],
+               '免勤理由分类': ['理由关键词', '分类', '说明'],
+               '统计参数': ['参数', '值', '说明']}
+
+    def __init__(self, name, rows):
+        super().__init__()
+        self.header = list(self.HEADERS.get(name, ['列1', '列2', '说明']))
+        self.rows_data = [list(r)[:len(self.header)] + [''] * max(0, len(self.header) - len(r))
+                     for r in rows]
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self.rows_data)
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(self.header)
+
+    def data(self, index, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        row = self.rows_data[index.row()]
+        value = row[index.column()] if index.column() < len(row) else ''
+        if role in (Qt.DisplayRole, Qt.EditRole):
+            return '' if value is None else str(value)
+        return None
+
+    def setData(self, index, value, role=Qt.EditRole):
+        if role in (Qt.EditRole, Qt.DisplayRole) and index.isValid():
+            row = self.rows_data[index.row()]
+            while len(row) <= index.column():
+                row.append('')
+            row[index.column()] = str(value)
+            self.dataChanged.emit(index, index)
+            return True
+        return False
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role != Qt.DisplayRole:
+            return None
+        if orientation == Qt.Horizontal:
+            return self.header[section]
+        return section + 1
+
+    def flags(self, index):
+        return Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsEditable
+
+    def append_blank(self):
+        self.beginInsertRows(QModelIndex(), len(self.rows_data), len(self.rows_data))
+        self.rows_data.append([''] * len(self.header))
+        self.endInsertRows()
+
+
+class _DictTableWidget(QWidget):
+    """词典编辑表格。"""
+
+    def __init__(self, name, rows):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        self.name = name
+        self.table = QTableView()
+        model = _DictModel(name, rows)
+        self.table.setModel(model)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.resizeColumnsToContents()
+        add_btn = QPushButton('新增一行')
+        add_btn.clicked.connect(model.append_blank)
+        layout.addWidget(self.table)
+        layout.addWidget(add_btn, 0, Qt.AlignRight)
+
+    def rows(self):
+        return [list(r) for r in self.table.model().rows_data]
+
+
+def build_app_font():
+    """挑一个能显示中文的字体。
+
+    Qt6 的 QFont.setFamilies 支持**字体回退列表**，而 QSS 里的 font-family
+    只认单个字体名、用逗号列表会解析失败——这正是界面中文变方块/乱码的
+    根因。所以字体一律在 Python 侧设置：先在系统字体库里探测哪些字体
+    真能渲染汉字，一个都没有就交给系统默认。
+    """
+    from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics
+    probe = '学'          # 任取一个汉字，用来验证字形覆盖
+    families = set(QFontDatabase.families())
+    preferred = ['Microsoft YaHei UI', 'Microsoft YaHei', '微软雅黑', 'SimHei',
+                 'SimSun', 'Noto Sans CJK SC', 'Source Han Sans SC',
+                 'DengXian', 'KaiTi', 'FangSong']
+    usable = []
+    for name in preferred:
+        if name not in families:
+            continue
+        font = QFont(name, 10)
+        if QFontMetrics(font).inFont(probe):
+            usable.append(name)
+    font = QFont()
+    font.setPointSize(10)
+    if usable:
+        font.setFamilies(usable)
+    return font
+
+
+def font_is_ok(font) -> bool:
+    """当前字体能不能渲染汉字。"""
+    from PySide6.QtGui import QFontMetrics
+    return bool(QFontMetrics(font).inFont('学'))
+
+
+def build_mono_font():
+    """挑一个等宽、且能显示中文的字体。
+
+    概览页用 '%-24s' 排版键值、pytest 输出是纯文本：比例字体（微软雅黑）会让
+    键值列错位，所以这两处必须等宽。字体一律在 Python 侧设置——QSS 的
+    font-family 只认单个字体名，逗号列表会解析失败。
+    """
+    from PySide6.QtGui import QFont, QFontDatabase, QFontMetrics
+    families = set(QFontDatabase.families())
+    for name in ('NSimSun', 'SimSun', 'Microsoft YaHei Mono',
+                 'Sarasa Mono SC', 'Consolas'):
+        if name not in families:
+            continue
+        font = QFont(name, 10)
+        if QFontMetrics(font).inFont('学'):
+            return font
+    return QFont()
+
+
+def run_font_selftest(app) -> int:
+    """渲染一张中文测试图，用来确认打包后中文可正常显示。"""
+    import json
+    from PySide6.QtGui import QFontMetrics
+    from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+    default_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+    if not _is_dir_writable(default_dir):
+        default_dir = user_writable_dir()
+    out = os.path.join(default_dir, 'font_selftest.png')
+    if len(sys.argv) > 2:
+        out = sys.argv[2]
+    w = QWidget()
+    w.setStyleSheet(APP_QSS)
+    layout = QVBoxLayout(w)
+    label = QLabel('提交自习执行情况明细表 · 免勤不完整（待补人数） · 出勤率 92.15%')
+    layout.addWidget(label)
+    w.resize(720, 120)
+    w.show()
+    app.processEvents()
+    w.grab().save(out)
+    font = app.font()
+    families = font.families() or [font.family()]
+    info = {
+        '图片': out,
+        '应用字体': font.family(),
+        '回退列表': list(families)[:8],
+        '能渲染汉字': bool(QFontMetrics(font).inFont('学')),
+        '系统字体总数': len(set(__import__('PySide6.QtGui', fromlist=['QFontDatabase']).QFontDatabase.families())),
+    }
+    with open(os.path.splitext(out)[0] + '.json', 'w', encoding='utf-8') as fh:
+        fh.write(json.dumps(info, ensure_ascii=False, indent=2))
+    print(json.dumps(info, ensure_ascii=False))
+    return 0
+
+
+def main() -> int:
+    if '-m' in sys.argv and 'pytest' in sys.argv:
+        # 防御性拦截：若被误以 -m pytest 参数调用，绝不递归拉起新 GUI 窗口
+        print('打包运行态不支持外部 -m pytest 子进程调用，请使用内置合成数据自检。')
+        return 0
+    app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setWindowIcon(QIcon(AttendanceIcon.pixmap(64)))
+    font = build_app_font()
+    app.setFont(font)
+    app.setStyleSheet(APP_QSS)
+    if '--selftest' in sys.argv:
+        return run_font_selftest(app)
+    if not font_is_ok(font):
+        QMessageBox.warning(
+            None, '缺少中文字体',
+            '当前系统没有可用的中文字体，界面文字会显示成方块。\n\n'
+            '解决办法：在「设置 → 时间和语言 → 语言和区域」里安装中文语言包，'
+            '或手动安装「微软雅黑 / 黑体 / 宋体」任一字体后重新打开本程序。')
+    window = MainWindow()
+    window.show()
+    return app.exec()
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

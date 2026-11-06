@@ -1,0 +1,30 @@
+# 原始数据、个人信息与本地配置
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.csv
+!/免勤词典.xlsx
+/data_sample/
+/_work/
+/输出/
+/_synthetic/
+.env
+.env.*
+*.bak
+
+# 运行和构建产物
+/dist/
+/build/
+/_debugbuild/
+/_debugdist/
+/发布版/
+/发布包/
+/.buildenv/
+/.venv/
+*.zip
+*.exe
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.hypothesis/

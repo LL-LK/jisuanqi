@@ -1,0 +1,31 @@
+# UTF-8
+#
+# Windows PE Version Information Resource Definition (Version 1.0.7.0)
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 7, 0),
+    prodvers=(1, 0, 7, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+  ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        '080404b0',
+        [StringStruct('CompanyName', '桂林理工大学早晚自习考勤工作组'),
+        StringStruct('FileDescription', '本地考勤工具'),
+        StringStruct('FileVersion', '1.0.7.0'),
+        StringStruct('InternalName', 'AttendanceStats'),
+        StringStruct('LegalCopyright', 'Copyright (C) 2026 LL-LK. All rights reserved.'),
+        StringStruct('OriginalFilename', 'AttendanceStats.exe'),
+        StringStruct('ProductName', '本地考勤工具'),
+        StringStruct('ProductVersion', '1.0.7.0')])
+      ]),
+    VarFileInfo([VarStruct('Translation', [2052, 1200])])
+  ]
+)
