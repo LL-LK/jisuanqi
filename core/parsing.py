@@ -641,3 +641,4 @@ def match_class_to_room_classes(student_class: str, room_classes_text: str) -> b
             if stu_major == r_major or stu_major in r_major or r_major in stu_major:
                 return True
     return False
+

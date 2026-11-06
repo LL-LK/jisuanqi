@@ -24,7 +24,7 @@ def test_parse_class_feature_variants():
 
 def test_match_class_to_room_classes():
     room_classes = "地球信息2026-1班、勘技2026-1班、勘技2026-2班、资勘2026-1班、资勘2026-2班"
-
+    
     # 精准命中
     assert match_class_to_room_classes("地球信息科学与技术2026-1半", room_classes) is True
     assert match_class_to_room_classes("勘查技术与工程26-1班", room_classes) is True

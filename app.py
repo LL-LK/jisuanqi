@@ -1181,7 +1181,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle(f'{APP_NAME} · 草莓小熊 · v{APP_VERSION}')
+        self.setWindowTitle(f'{APP_NAME} · 草莓小熊')
         self.setWindowIcon(QIcon(AttendanceIcon.pixmap(64)))
         self.resize(1360, 880)
         self.setAcceptDrops(True)
@@ -1407,7 +1407,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.output_preview)
 
         notice = QLabel(
-            '免勤按学院回填。辅导员巡查、考勤时间和巡查效果由人工填写。')
+            '自动识别教室/学院模板回填免勤。辅导员巡查、考勤时间和巡查效果由人工填写。')
         notice.setObjectName('notice')
         notice.setWordWrap(True)
         layout.addWidget(notice)
@@ -1504,6 +1504,12 @@ class MainWindow(QMainWindow):
         self.chk_complete_mode = QCheckBox('容错计算')
         self.chk_complete_mode.setToolTip('容错模式允许按已录入的实到计算，并将非正分母按满勤处理。')
         form.addRow('出勤率', self.chk_complete_mode)
+        self.chk_college_exempt = QCheckBox('强制按学院合并回填免勤（未勾选则按模板结构自动识别）')
+        self.chk_college_exempt.setToolTip('默认自动根据明细表是否合并免勤列或是否为学院汇总表识别；勾选后强制按学院合并免勤列。')
+        form.addRow('免勤回填', self.chk_college_exempt)
+        self.chk_append_sheets = QCheckBox('在导出 Excel 中附带免勤统计与核对工作表')
+        self.chk_append_sheets.setToolTip('默认不勾选，严格仅保留「雁山（早）」「雁山（晚）」「屏风」原始三张表。')
+        form.addRow('附加工作表', self.chk_append_sheets)
         self.dict_edit = QLineEdit(default_dictionary_path())
         btn_dict = QPushButton('浏览…')
         btn_dict.clicked.connect(self._pick_dict)
@@ -1824,8 +1830,8 @@ class MainWindow(QMainWindow):
             exempt_source=self.source_combo.currentText(),
             dictionary_path=self.dict_edit.text().strip() or None,
             complete_mode=self.chk_complete_mode.isChecked(),
-            college_exempt=True,
-            include_exempt_summary=True,
+            college_exempt=self.chk_college_exempt.isChecked(),
+            include_exempt_summary=self.chk_append_sheets.isChecked(),
         )
         self._save_settings()
         self._set_busy(True)
@@ -1883,6 +1889,8 @@ class MainWindow(QMainWindow):
         self.source_combo.setCurrentText('未分类')
         self.dict_edit.setText(default_dictionary_path())
         self.chk_complete_mode.setChecked(False)
+        self.chk_college_exempt.setChecked(False)
+        self.chk_append_sheets.setChecked(False)
         self._load_dictionary()
         self._set_status('已恢复默认设置')
 

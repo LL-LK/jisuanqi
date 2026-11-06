@@ -45,7 +45,8 @@ def test_main_window_exposes_four_capability_panels(window):
 
 def test_window_title_has_name_and_version(window):
     assert gui.APP_NAME in window.windowTitle()
-    assert gui.APP_VERSION in window.windowTitle()
+    assert '草莓小熊' in window.windowTitle()
+    assert f'v{gui.APP_VERSION}' not in window.windowTitle()
 
 
 def test_dictionary_panel_loads_tables(window):
@@ -98,3 +99,9 @@ def test_selfcheck_command_is_wellformed(monkeypatch, window):
 def test_low_rate_threshold_is_in_range():
     """低出勤率复核阈值必须落在 (0, 1] 内。"""
     assert 0 < gui.LOW_RATE_THRESHOLD <= 1
+
+
+def test_default_optional_settings_preserve_auto_mode_and_three_sheets(window):
+    """默认不强制锁死按学院合并，且默认不追加额外工作表（严格保持三张原始表）。"""
+    assert window.chk_college_exempt.isChecked() is False
+    assert window.chk_append_sheets.isChecked() is False
