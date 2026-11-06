@@ -77,9 +77,9 @@ class AttendanceIcon:
         painter.setRenderHint(QPainter.Antialiasing)
         painter.scale(size / 48, size / 48)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor('#E6EEFF'))
+        painter.setBrush(QColor('#F8E7EC'))
         painter.drawRoundedRect(QRectF(1, 1, 46, 46), 10, 10)
-        pen = QPen(QColor('#244E9D'), 2.6)
+        pen = QPen(QColor('#781236'), 2.6)
         pen.setCapStyle(Qt.RoundCap)
         pen.setJoinStyle(Qt.RoundJoin)
         painter.setPen(pen)
@@ -95,126 +95,132 @@ class AttendanceIcon:
 
 
 COLORS = {
-    'bg': '#F9F5F6',
-    'card': '#FFFFFF',
-    'border': '#E5D6DC',
-    'control': '#A4B4CB',
-    'divider': '#E4EAF2',
-    'header_bg': '#F2E9ED',
-    'text': '#273B54',
-    'text_strong': '#172B45',
-    'muted': '#52637B',
-    'primary': '#2754B7',
-    'primary_dark': '#183D8D',
-    'primary_light': '#E6EEFF',
-    'info': '#355F9B',
+    'bg': '#FBF7F3',
+    'card': '#FFFCFA',
+    'border': '#DDC6C4',
+    'control': '#C7ADAF',
+    'divider': '#EBDAD6',
+    'header_bg': '#F2DFE1',
+    'text': '#442332',
+    'text_strong': '#391525',
+    'muted': '#70515C',
+    'primary': '#961B48',
+    'primary_dark': '#781236',
+    'primary_light': '#F8E7EC',
+    'info': '#77505C',
     'danger': '#B33C48',
     'warn_bg': '#FFF6DC',
     'warn_fg': '#8D580D',
-    'info_bg': '#EDF4FF',
-    'info_fg': '#284D80',
+    'info_bg': '#F8EEF0',
+    'info_fg': '#693C4C',
     'low_bg': '#FFEAEA',
     'low_fg': '#A82A3F',
-    'slate': '#5D6F87',
+    'slate': '#795F68',
     'green_fg': '#146F64',
-    'muted_fg': '#52637B',
+    'muted_fg': '#70515C',
     'estimate_bg': '#' + ESTIMATE_RGB,
     'estimate_fg': '#8D580D',
-    'trace_bg': '#EEF2F7',
+    'trace_bg': '#F1EBE8',
 }
 
 APP_QSS = """
-
-
 QWidget { background:%(bg)s; color:%(text)s; font-size:13px; }
 QMainWindow, QDialog { background:%(bg)s; }
 QLabel { background:transparent; }
 QCheckBox { background:transparent; }
-QToolTip { background:#273B54; color:#FFFFFF; border:none; border-radius:6px; padding:5px 9px; }
+QToolTip { background:#442332; color:#FFFFFF; border:none; border-radius:6px; padding:5px 9px; }
 
 /* ---------- 三槽流水线 ---------- */
 QFrame#dropSlot, QFrame#settingsPanel, QFrame#metricCard {
     background:%(card)s; border:1px solid %(border)s; border-radius:10px; }
-QFrame#dropSlot[dragOver="true"] { background:#E8F1FF; border:2px solid %(primary)s; }
-QFrame#dropSlot[ready="true"] { background:#FFFFFF; border:1px solid #A9C9CB; }
+QFrame#dropSlot { border-color:#C78E9C; }
+QFrame#dropSlot[dragOver="true"] { background:%(primary_light)s; border:2px solid %(primary)s; }
 QFrame#dropSlot[dragReject="true"] { background:#FFF2F2; border:2px solid #FFAAA6; }
-QLabel#slotBadge { color:#FFFFFF; font-weight:bold; border-radius:7px; padding:2px 8px;
+QLabel#slotBadge { color:#FFFFFF; font-weight:bold; border-radius:8px; padding:3px 11px;
                    background:%(primary)s; }
-QLabel#slotBadge[ready="true"] { background:%(green_fg)s; }
-QLabel#slotTitle { font-size:15px; font-weight:600; color:%(text_strong)s; }
-QLabel#slotPath { color:%(muted)s; }
-QLabel#workspaceTitle { font-size:26px; font-weight:bold; color:%(text_strong)s; }
-QLabel#sectionTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
-QLabel#metricValue { font-size:24px; font-weight:bold; color:%(primary_dark)s; }
+QLabel#slotTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
+QLabel#slotPath { color:%(muted)s; background:#FFFFFF; border:1px solid %(border)s;
+                  border-radius:6px; padding:3px 8px; }
+QFrame#dropSlot[ready="true"] QLabel#slotPath { color:%(green_fg)s; }
+QFrame#brandDivider { background:#C78E9C; }
+QLabel#workspaceTitle { font-size:30px; font-weight:bold; color:%(text_strong)s; }
+QLabel#sectionTitle { font-size:18px; font-weight:bold; color:%(text_strong)s; }
+QLabel#settingLabel { font-weight:600; color:%(text_strong)s; }
+QFrame#metricCard { background:%(bg)s; }
+QLabel#metricLabel { color:%(text)s; font-size:13px; font-weight:600; }
+QLabel#metricValue { font-size:26px; font-weight:bold; color:%(text_strong)s; }
 QLabel#localBadge { background:#E9F4ED; color:%(green_fg)s; border-radius:8px;
                     padding:5px 10px; font-weight:600; }
 QWidget#reportTools, QTabWidget QWidget#contentPage { background:%(card)s; }
 
 /* ---------- 按钮 ---------- */
-QPushButton { background:%(card)s; color:%(text)s; border:1.5px solid %(control)s;
+QPushButton { background:%(card)s; color:%(text)s; border:1px solid %(control)s;
               border-radius:8px; padding:6px 14px; min-height:20px; font-weight:500; }
-QPushButton:hover { border-color:%(primary)s; color:%(primary_dark)s; background:#EFF4FE; }
-QPushButton:pressed { background:#E0EAFC; border-color:%(primary_dark)s; }
+QPushButton:hover { border-color:%(primary)s; color:%(primary_dark)s; background:#F9EDF0; }
+QPushButton:pressed { background:#F4DFE5; border-color:%(primary_dark)s; }
 QPushButton:focus { border-color:%(primary)s; }
-QPushButton:disabled { color:#7D8898; background:#F1F4F8; border-color:#E1E7EE; }
+QPushButton:disabled { color:#7F696E; background:#F4EDE9; border-color:#EADCD8; }
 QPushButton#primaryButton { background:%(primary)s; color:#FFFFFF; border:2px solid %(primary)s;
                             border-radius:8px; font-weight:bold; font-size:14px; padding:6px 14px;
                             min-height:22px; }
 QPushButton#primaryButton:hover, QPushButton#primaryButton:pressed { background:%(primary_dark)s; }
-QPushButton#primaryButton:focus { border-color:#132D6C; }
-QPushButton#primaryButton:disabled { background:#E7EDF5; color:#586B82; border-color:#E7EDF5; }
+QPushButton#primaryButton:focus { border-color:#5F102D; }
+QPushButton#primaryButton:disabled { background:#F3E7E5; color:#7A6069; border-color:#F3E7E5; }
 QPushButton#privacyLink { background:transparent; color:%(primary)s; border:1px solid transparent; }
 QPushButton#privacyLink:hover, QPushButton#privacyLink:focus {
     background:%(primary_light)s; border-color:%(border)s; }
 
 /* ---------- 输入控件 ---------- */
 QLineEdit, QComboBox, QSpinBox { background:%(card)s; color:%(text)s;
-    border:1.5px solid %(control)s; border-radius:8px; padding:6px 10px; min-height:20px;
-    selection-background-color:#C9DBFD; selection-color:%(text_strong)s; }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color:%(primary)s; background:#FFFFFF; }
+    border:1px solid %(control)s; border-radius:8px; padding:6px 10px; min-height:20px;
+    selection-background-color:#EBC5D1; selection-color:%(text_strong)s; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color:%(primary)s; background:#FFFCFA; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
-    color:#7D8898; background:#F1F4F8; border-color:#E1E7EE; }
-QLineEdit::placeholder { color:#64748A; }
+    color:#7F696E; background:#F4EDE9; border-color:#EADCD8; }
+QLineEdit::placeholder { color:#7A6069; }
 QComboBox QAbstractItemView { background:%(card)s; border:1.5px solid %(control)s;
-    selection-background-color:#E6EEFF; selection-color:%(text)s; outline:none; border-radius:6px; }
+    selection-background-color:#F8E7EC; selection-color:%(text)s; outline:none; border-radius:6px; }
 
 /* ---------- 表格 ---------- */
-QTableView { background:%(card)s; alternate-background-color:#F7F9FC;
-             border:1.5px solid %(border)s; border-radius:10px; gridline-color:%(divider)s;
-             selection-background-color:#DCE8FC; selection-color:#172B45; }
+QTableView { background:%(card)s; alternate-background-color:#FAF2EE;
+             border:1px solid %(border)s; border-radius:10px; gridline-color:%(divider)s;
+             selection-background-color:#F1D6DF; selection-color:#391525; }
 QTableView::item { padding:5px 8px; border:none; }
-QTableView::item:selected { background:#DCE8FC; color:#172B45; }
+QTableView::item:selected { background:#F1D6DF; color:#391525; }
 QHeaderView { background:%(card)s; }
 QHeaderView::section { background:%(header_bg)s; color:%(text_strong)s; padding:7px 10px;
                        border:none; border-right:1px solid %(divider)s;
                        border-bottom:1.5px solid %(border)s; font-weight:bold; font-size:12px; }
-QHeaderView::section:hover { background:#E0EAFC; }
+QHeaderView::section:hover { background:#F4DFE5; }
 
 /* ---------- 页签 ---------- */
-QTabWidget::pane { background:%(card)s; border:1.5px solid %(border)s; border-radius:10px; top:-1px; }
+QTabWidget::pane { background:%(card)s; border:1px solid %(border)s; border-radius:10px; top:-1px; }
 QTabBar::tab { background:transparent; color:%(muted)s; padding:8px 11px;
                margin-right:2px; border-top-left-radius:8px; border-top-right-radius:8px;
                border-bottom:2.5px solid transparent; font-weight:500; }
-QTabBar::tab:hover { color:%(primary_dark)s; background:#EFF4FE; }
+QTabBar::tab:hover { color:%(primary_dark)s; background:#F9EDF0; }
 QTabBar::tab:selected { background:%(card)s; color:%(primary_dark)s; font-weight:bold;
                          border-bottom:2.5px solid %(primary)s; }
-QTabBar::tab:disabled { color:#8390A0; }
+QTabBar::tab:disabled { color:#8C767C; }
+QTabWidget#workspaceTabs > QTabBar::tab { border:0; border-radius:7px; margin:0 4px 6px 0;
+                                       padding:8px 18px; }
+QTabWidget#workspaceTabs > QTabBar::tab:selected { background:%(primary)s; color:#FFFFFF; }
 
 /* ---------- 文本域（概览 / 自测输出；等宽字体在 Python 侧设置） ---------- */
 QPlainTextEdit { background:%(card)s; color:%(text)s; border:1.5px solid %(border)s;
                  border-radius:10px; padding:10px; }
 
 /* ---------- 进度条 ---------- */
-QProgressBar { border:1px solid %(border)s; border-radius:8px; background:#EBF1FA;
+QProgressBar { border:1px solid %(border)s; border-radius:8px; background:#F4EAE6;
                text-align:center; height:18px; color:%(text_strong)s; font-weight:bold; font-size:12px; }
 QProgressBar::chunk { background:%(primary)s; border-radius:7px; }
 
 /* ---------- 滚动条 ---------- */
 QScrollBar:vertical { background:%(bg)s; width:10px; margin:0; border:none; }
-QScrollBar::handle:vertical { background:#C5D2E3; border-radius:5px; min-height:28px; }
+QScrollBar::handle:vertical { background:#D9BFC0; border-radius:5px; min-height:28px; }
 QScrollBar::handle:vertical:hover { background:%(primary)s; }
 QScrollBar:horizontal { background:%(bg)s; height:10px; margin:0; border:none; }
-QScrollBar::handle:horizontal { background:#C5D2E3; border-radius:5px; min-width:28px; }
+QScrollBar::handle:horizontal { background:#D9BFC0; border-radius:5px; min-width:28px; }
 QScrollBar::handle:horizontal:hover { background:%(primary)s; }
 QScrollBar::add-line, QScrollBar::sub-line { height:0px; width:0px; }
 QScrollBar::add-page, QScrollBar::sub-page { background:none; }
@@ -227,10 +233,9 @@ QGroupBox::title { subcontrol-origin:margin; left:12px; padding:0 4px;
 
 /* ---------- 提示、说明与状态行 ---------- */
 QLabel#hint { color:%(muted)s; font-size:12px; }
-QLabel#notice { color:%(text)s; background:#F5F8FC; border:1.5px dashed %(border)s;
-                border-radius:10px; padding:12px; }
-QLabel#statusBar { color:%(text_strong)s; background:%(card)s; border:1.5px solid %(border)s;
-                   border-left:4px solid %(primary)s; border-radius:8px; padding:8px 12px; font-weight:500; }
+QLabel#notice { color:%(muted)s; font-size:12px; }
+QLabel#statusBar { color:%(text_strong)s; background:%(card)s; border:1px solid %(border)s;
+                   border-left:3px solid %(primary)s; border-radius:8px; padding:6px 11px; font-weight:500; }
 QLabel#statusBar[state="warn"] { border-left:4px solid %(warn_fg)s; color:%(warn_fg)s; background:#FFFDF7; }
 QLabel#statusBar[state="error"] { border-left:4px solid %(danger)s; color:%(danger)s; background:#FFF8F8; }
 
@@ -440,57 +445,57 @@ class StatusDialog(QDialog):
         self.setModal(True)
         self.setStyleSheet("""
             QDialog {
-                background: #EFF4FE;
+                background: #F9EDF0;
             }
             QLabel#dialogTitle {
                 font-size: 16px;
                 font-weight: bold;
-                color: #172B45;
+                color: #391525;
             }
             QLabel#dialogMessage {
                 font-size: 13px;
-                color: #273B54;
+                color: #442332;
                 line-height: 1.4;
             }
             QFrame#adviceCard {
-                background: #F5F8FC;
-                border: 1px dashed #C5D2E3;
+                background: #FBF3EF;
+                border: 1px dashed #D9BFC0;
                 border-radius: 10px;
                 padding: 10px 12px;
             }
             QLabel#adviceText {
                 font-size: 12px;
-                color: #273B54;
+                color: #442332;
                 line-height: 1.35;
             }
             QPushButton#toggleBtn {
                 background: transparent;
                 border: none;
-                color: #52637B;
+                color: #70515C;
                 font-size: 12px;
                 font-weight: 500;
                 padding: 4px 6px;
                 text-align: left;
             }
             QPushButton#toggleBtn:hover {
-                color: #2754B7;
+                color: #961B48;
             }
             QPushButton#copyBtn {
-                background: #FFFFFF;
-                border: 1px solid #A4B4CB;
+                background: #FFFCFA;
+                border: 1px solid #C7ADAF;
                 border-radius: 6px;
-                color: #273B54;
+                color: #442332;
                 font-size: 11px;
                 padding: 3px 8px;
             }
             QPushButton#copyBtn:hover {
-                border-color: #2754B7;
-                color: #183D8D;
+                border-color: #961B48;
+                color: #781236;
             }
             QPlainTextEdit#techDetailBox {
-                background: #F1F4F8;
-                color: #273B54;
-                border: 1px solid #D5DDE8;
+                background: #F4EDE9;
+                color: #442332;
+                border: 1px solid #E6D6D2;
                 border-radius: 8px;
                 padding: 8px;
                 font-size: 11px;
@@ -534,7 +539,7 @@ class StatusDialog(QDialog):
             adv_layout.setContentsMargins(10, 8, 10, 8)
             adv_layout.setSpacing(4)
             adv_title = QLabel('处理建议')
-            adv_title.setStyleSheet('font-weight: bold; color: #183D8D; font-size: 12px;')
+            adv_title.setStyleSheet('font-weight: bold; color: #781236; font-size: 12px;')
             adv_layout.addWidget(adv_title)
             adv_text = QLabel(advice)
             adv_text.setTextFormat(Qt.PlainText)
@@ -643,8 +648,8 @@ class StudentDrilldownDialog(QDialog):
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
-                background: #E8F1FF;
-                border: 1px solid #C9DBFD;
+                background: #F8E7EC;
+                border: 1px solid #EBC5D1;
                 border-radius: 10px;
                 padding: 10px 14px;
             }
@@ -653,14 +658,14 @@ class StudentDrilldownDialog(QDialog):
         c_layout.setContentsMargins(4, 4, 4, 4)
         c_lbl = QLabel(f'{scope_info}\n当前范围 {len(self.raw_students)} 条个人免勤记录')
         c_lbl.setTextFormat(Qt.PlainText)
-        c_lbl.setStyleSheet("font-size: 13px; color: #273B54;")
+        c_lbl.setStyleSheet("font-size: 13px; color: #442332;")
         c_layout.addWidget(c_lbl)
         layout.addWidget(card)
 
         # 搜索过滤条
         filter_bar = QHBoxLayout()
         filter_lbl = QLabel("搜索")
-        filter_lbl.setStyleSheet("font-weight: bold; color: #273B54;")
+        filter_lbl.setStyleSheet("font-weight: bold; color: #442332;")
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText('按姓名、学院、班级或学号筛选')
         self.search_input.textChanged.connect(self._apply_filter)
@@ -680,14 +685,14 @@ class StudentDrilldownDialog(QDialog):
         export_btn.setToolTip('导出的 CSV 含有个人信息')
         export_btn.setStyleSheet("""
             QPushButton {
-                background: #2754B7;
+                background: #961B48;
                 color: white;
                 font-weight: bold;
                 border-radius: 6px;
                 padding: 6px 14px;
             }
             QPushButton:hover {
-                background: #183D8D;
+                background: #781236;
             }
         """)
         export_btn.clicked.connect(self._export_csv)
@@ -767,8 +772,8 @@ class DropSlot(QFrame):
         self._hint = hint
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(5)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(7)
 
         head = QHBoxLayout()
         head.setSpacing(8)
@@ -785,7 +790,7 @@ class DropSlot(QFrame):
         self.path_label.setWordWrap(True)
         self.path_label.setTextFormat(Qt.PlainText)
         self.path_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.path_label.setFixedHeight(36)
+        self.path_label.setFixedHeight(38)
         layout.addWidget(self.path_label)
 
         self.choose_btn = QPushButton('选择文件…')
@@ -830,13 +835,12 @@ class DropSlot(QFrame):
         if self.multiple:
             self.manage_btn.setEnabled(ready)
         self._repolish()
-        self.badge.setProperty('ready', ready)
-        self.badge.style().unpolish(self.badge)
-        self.badge.style().polish(self.badge)
 
     def _repolish(self):
         self.style().unpolish(self)
         self.style().polish(self)
+        self.path_label.style().unpolish(self.path_label)
+        self.path_label.style().polish(self.path_label)
         self.update()
 
     # ---------------------------------------------------------------- 交互
@@ -895,14 +899,14 @@ class DropSlot(QFrame):
             self.setProperty('dragReject', True)
             self._repolish()
             self.path_label.setText('请选择 .xlsx 或 .xlsm 文件。')
-            self.path_label.setStyleSheet('color:#E84A5F; font-weight:bold;')
+            self.path_label.setStyleSheet('color:#B33C48; font-weight:bold;')
             return
         event.acceptProposedAction()
         self.setProperty('dragReject', False)
         self.setProperty('dragOver', True)
         self._repolish()
         self.path_label.setText('松开鼠标导入文件')
-        self.path_label.setStyleSheet('color:#2754B7; font-weight:bold;')
+        self.path_label.setStyleSheet('color:#961B48; font-weight:bold;')
 
     def dragLeaveEvent(self, event):
         self.setProperty('dragOver', False)
@@ -920,7 +924,7 @@ class DropSlot(QFrame):
             self.setProperty('dragReject', True)
             self._repolish()
             self.path_label.setText('请选择 .xlsx 或 .xlsm 文件')
-            self.path_label.setStyleSheet('color:#E84A5F; font-weight:bold;')
+            self.path_label.setStyleSheet('color:#B33C48; font-weight:bold;')
             event.ignore()
             return
 
@@ -962,8 +966,8 @@ class ResultSlot(QFrame):
         self._selected_paths = selected_paths
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(5)
+        layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(7)
 
         head = QHBoxLayout()
         head.setSpacing(8)
@@ -980,7 +984,7 @@ class ResultSlot(QFrame):
         self.state_label.setWordWrap(True)
         self.state_label.setTextFormat(Qt.PlainText)
         self.state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.state_label.setFixedHeight(36)
+        self.state_label.setFixedHeight(38)
         layout.addWidget(self.state_label)
 
         row = QHBoxLayout()
@@ -1004,13 +1008,12 @@ class ResultSlot(QFrame):
                                  else '完成计算后可另存或打开目录')
         self.state_label.setToolTip(self._path)
         self.setProperty('ready', ready)
-        self.badge.setProperty('ready', ready)
-        self.badge.style().unpolish(self.badge)
-        self.badge.style().polish(self.badge)
         self.save_btn.setEnabled(ready)
         self.open_btn.setEnabled(ready)
         self.style().unpolish(self)
         self.style().polish(self)
+        self.state_label.style().unpolish(self.state_label)
+        self.state_label.style().polish(self.state_label)
         self.update()
 
     def _save_as(self):
@@ -1267,15 +1270,20 @@ class MainWindow(QMainWindow):
         central = QWidget()
         self.setCentralWidget(central)
         outer = QVBoxLayout(central)
-        outer.setContentsMargins(16, 14, 16, 12)
-        outer.setSpacing(12)
+        outer.setContentsMargins(16, 10, 16, 12)
+        outer.setSpacing(11)
 
         header = QHBoxLayout()
         header.setSpacing(12)
         avatar = QLabel()
-        avatar.setPixmap(AttendanceIcon.pixmap(68))
-        avatar.setFixedSize(68, 68)
+        avatar.setPixmap(AttendanceIcon.pixmap(66))
+        avatar.setFixedSize(66, 66)
+        avatar.setAlignment(Qt.AlignCenter)
         header.addWidget(avatar)
+        divider = QFrame()
+        divider.setObjectName('brandDivider')
+        divider.setFixedSize(1, 45)
+        header.addWidget(divider, 0, Qt.AlignVCenter)
         heading = QVBoxLayout()
         heading.setSpacing(1)
         title = QLabel(APP_NAME)
@@ -1289,10 +1297,10 @@ class MainWindow(QMainWindow):
         self.privacy_btn = QPushButton('隐私使用声明')
         self.privacy_btn.setObjectName('privacyLink')
         self.privacy_btn.clicked.connect(self._show_privacy_notice)
-        header.addWidget(self.privacy_btn)
         badge = QLabel('本地处理')
         badge.setObjectName('localBadge')
         header.addWidget(badge, 0, Qt.AlignVCenter)
+        header.addWidget(self.privacy_btn)
         outer.addLayout(header)
         outer.addWidget(self._build_slots_row())
 
@@ -1355,10 +1363,14 @@ class MainWindow(QMainWindow):
         panel.setObjectName('settingsPanel')
         panel.setMinimumWidth(254)
         panel.setMaximumWidth(340)
-        form = QFormLayout(panel)
-        form.setContentsMargins(14, 14, 14, 14)
-        form.setSpacing(9)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(15, 14, 15, 14)
+        layout.setSpacing(12)
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        layout.addLayout(form)
         title = QLabel('统计设置')
         title.setObjectName('sectionTitle')
         form.addRow(title)
@@ -1368,7 +1380,11 @@ class MainWindow(QMainWindow):
         self.week_spin.setValue(7)
         self.week_spin.setPrefix('第 ')
         self.week_spin.setSuffix(' 周')
-        form.addRow('统计周次', self.week_spin)
+        week_label = QLabel('统计周次')
+        week_label.setObjectName('settingLabel')
+        week_label.setBuddy(self.week_spin)
+        form.addRow(week_label)
+        form.addRow(self.week_spin)
 
         self.out_edit = QLineEdit()
         self.out_edit.setPlaceholderText('使用默认位置')
@@ -1377,7 +1393,10 @@ class MainWindow(QMainWindow):
         row3 = QHBoxLayout()
         row3.addWidget(self.out_edit)
         row3.addWidget(btn_out)
-        form.addRow(QLabel('结果输出路径'))
+        out_label = QLabel('结果输出路径')
+        out_label.setObjectName('settingLabel')
+        out_label.setBuddy(self.out_edit)
+        form.addRow(out_label)
         form.addRow(row3)
 
         self.output_preview = PathPreview()
@@ -1387,24 +1406,25 @@ class MainWindow(QMainWindow):
         self.out_edit.textChanged.connect(self._refresh_output_preview)
         form.addRow(self.output_preview)
 
+        notice = QLabel(
+            '免勤按学院回填。辅导员巡查、考勤时间和巡查效果由人工填写。')
+        notice.setObjectName('notice')
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        layout.addStretch(1)
+
         self.run_btn = QPushButton('开始计算')
         self.run_btn.setObjectName('primaryButton')
-        self.run_btn.setMinimumHeight(42)
+        self.run_btn.setMinimumHeight(48)
         self.run_btn.setShortcut('Ctrl+Return')
         self.run_btn.setToolTip('开始计算（Ctrl+Enter）')
         self.run_btn.clicked.connect(self._start_run)
-        form.addRow(self.run_btn)
-
-        notice = QLabel(
-            '免勤按学院回填。\n'
-            '辅导员巡查、考勤时间和执行效果由人工填写。')
-        notice.setObjectName('notice')
-        notice.setWordWrap(True)
-        form.addRow(notice)
+        layout.addWidget(self.run_btn)
         return panel
 
     def _build_tabs(self):
         self.tabs = QTabWidget()
+        self.tabs.setObjectName('workspaceTabs')
         self.tabs.setUsesScrollButtons(True)
 
         overview = QWidget()
@@ -1511,16 +1531,16 @@ class MainWindow(QMainWindow):
 
     def _add_metrics(self, layout, titles):
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(10)
         values = []
         for title in titles:
             card = QFrame()
             card.setObjectName('metricCard')
             content = QVBoxLayout(card)
-            content.setContentsMargins(12, 8, 12, 8)
+            content.setContentsMargins(14, 10, 14, 10)
             content.setSpacing(2)
             label = QLabel(title)
-            label.setObjectName('hint')
+            label.setObjectName('metricLabel')
             content.addWidget(label)
             value = QLabel('—')
             value.setObjectName('metricValue')
@@ -2479,7 +2499,7 @@ class MainWindow(QMainWindow):
         # 高亮由深到浅，最后恢复原色。
         pulse_palette = [
             QColor('#FF94A8'),
-            QColor('#C9DBFD'),
+            QColor('#EBC5D1'),
             QColor('#FF94A8'),
             QColor('#FFE3EB'),
             original_color,
