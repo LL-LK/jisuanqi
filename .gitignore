@@ -12,9 +12,14 @@
 .env
 .env.*
 *.bak
+*.db
+*.db-wal
+*.db-shm
+e2e_report.json
 
 # 运行和构建产物
 /dist/
+/dist_linux/
 /build/
 /_debugbuild/
 /_debugdist/
@@ -23,6 +28,7 @@
 /.buildenv/
 /.venv/
 *.zip
+*.tar.gz
 *.exe
 __pycache__/
 *.py[cod]

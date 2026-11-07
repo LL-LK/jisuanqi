@@ -15,14 +15,15 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import RunConfig, run          # noqa: E402
 from core.exempt_report import export_exempt_report
-from core.export import check_output_path
+from core.export import check_output_path, verify_workbook_integrity
 from core.io_detail import week_from_label
 from core.pipeline import output_path_for
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='三早一晚免勤自动统计系统')
-    parser.add_argument('--detail', required=True, help='执行情况明细表路径')
+    parser.add_argument('--verify-tamper', default=None, help='校验指定结果 Excel 文件的防篡改签名完整性')
+    parser.add_argument('--detail', required=False, help='执行情况明细表路径')
     parser.add_argument('--exempt', action='extend', nargs='+', default=[], help='一个或多个免勤表路径，可重复使用')
     parser.add_argument('--out', default=None, help='输出文件路径')
     parser.add_argument('--exempt-report', default=None, help='另行输出免勤统计工作簿（.xlsx）')
@@ -37,6 +38,19 @@ def main(argv=None) -> int:
     parser.add_argument('--college-exempt', action='store_true', help='按学院回填免勤（合并免勤列的模板自动使用）')
     parser.add_argument('--include-exempt-summary', action='store_true', help='将免勤统计一并写入明细结果工作簿')
     args = parser.parse_args(argv)
+
+    if args.verify_tamper:
+        ok, violations = verify_workbook_integrity(args.verify_tamper)
+        if ok:
+            print('防篡改校验通过：文件未被篡改 (%s)' % args.verify_tamper)
+            return 0
+        print('防篡改校验失败，发现 %d 处异常：' % len(violations))
+        for v in violations:
+            print('  - %s' % v)
+        return 2
+
+    if not args.detail:
+        parser.error('the following arguments are required: --detail')
 
     config = RunConfig(
         detail_path=args.detail,

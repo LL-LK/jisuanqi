@@ -50,7 +50,7 @@ def test_exempt_breakdown_reports_only_once_and_keeps_unwritten_scopes(tmp_path)
         book.close()
     book = load_workbook(out, data_only=True)
     try:
-        assert book.sheetnames == ['雁山（早）', '雁山（晚）', '屏风']
+        assert [s for s in book.sheetnames if s != '_系统校验元数据'] == ['雁山（早）', '雁山（晚）', '屏风']
         assert book['雁山（早）']['G4'].value == 40
     finally:
         book.close()

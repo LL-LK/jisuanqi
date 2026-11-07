@@ -82,12 +82,16 @@ def test_export_refuses_to_overwrite_input(synthetic_detail, tmp_path):
 # ------------------------------------------------------------------ 工作表名单
 
 
+def _visible_sheetnames(wb):
+    return [s for s in wb.sheetnames if s not in ('_系统校验元数据', '免勤核对')]
+
+
 def test_output_sheet_names_are_exactly_three(synthetic_run):
     """输出工作表名单恒等于输入的三张表。"""
     _, output = synthetic_run
     wb = load_workbook(output, read_only=True)
     try:
-        assert wb.sheetnames == EXPECTED_SHEETS
+        assert _visible_sheetnames(wb) == EXPECTED_SHEETS
     finally:
         wb.close()
 
@@ -97,8 +101,8 @@ def test_output_has_no_extra_sheets(synthetic_run):
     _, output = synthetic_run
     wb = load_workbook(output, read_only=True)
     try:
-        assert len(wb.sheetnames) == 3
-        assert set(wb.sheetnames) == set(ALLOWED_SHEETS)
+        assert len(_visible_sheetnames(wb)) == 3
+        assert set(_visible_sheetnames(wb)) == set(ALLOWED_SHEETS)
     finally:
         wb.close()
 
@@ -108,7 +112,7 @@ def test_output_sheet_names_match_input(synthetic_detail, synthetic_run):
     src = load_workbook(synthetic_detail, read_only=True)
     dst = load_workbook(output, read_only=True)
     try:
-        assert dst.sheetnames == src.sheetnames
+        assert _visible_sheetnames(dst) == src.sheetnames
     finally:
         src.close()
         dst.close()

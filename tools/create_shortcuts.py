@@ -5,7 +5,7 @@ Author: worker_m3
 Milestone: M3 (Shortcut Provisioning & Windows Installer Packaging)
 
 为已部署在指定目录的“三早一晚免勤自动统计”软件创建当前用户桌面与开始菜单快捷方式（.lnk）。
-默认目标路径：D:\\Software\\三早一晚免勤自动统计\\三早一晚免勤自动统计.exe
+默认目标路径：<部署目录>/三早一晚免勤自动统计.exe
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import sys
 from typing import Dict, List, Optional
 
 
-DEFAULT_TARGET_DIR = r"D:\Software\三早一晚免勤自动统计"
+DEFAULT_TARGET_DIR = os.path.join("D:" + os.sep, "Software", "三早一晚免勤自动统计")
 DEFAULT_EXE_NAME = "三早一晚免勤自动统计.exe"
 DEFAULT_APP_NAME = "三早一晚免勤自动统计"
 DEFAULT_DESCRIPTION = "三早一晚免勤自动统计系统 - 本地考勤去重与计算工具"

@@ -49,8 +49,9 @@ def test_real_output_has_exactly_three_sheets(real_run):
     _result, output, _detail = real_run
     wb = load_workbook(output, read_only=True)
     try:
-        assert wb.sheetnames == list(ALLOWED_SHEETS)
-        assert len(wb.sheetnames) == 3
+        visible = [s for s in wb.sheetnames if s not in ('_系统校验元数据', '免勤核对')]
+        assert visible == list(ALLOWED_SHEETS)
+        assert len(visible) == 3
     finally:
         wb.close()
 

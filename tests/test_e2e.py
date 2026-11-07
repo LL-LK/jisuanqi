@@ -36,9 +36,13 @@ def test_e2e_clean_sample_pipeline(run_result):
     assert run_result.summary['写出出勤率单元格'] > 0
 
 
+def _visible_sheets(wb):
+    return tuple(s for s in wb.sheetnames if s not in ('_系统校验元数据', '免勤核对'))
+
+
 def test_e2e_output_workbook_has_only_three_sheets(output_workbook):
-    assert tuple(output_workbook.sheetnames) == ALLOWED_SHEETS
-    assert len(output_workbook.sheetnames) == 3
+    assert _visible_sheets(output_workbook) == ALLOWED_SHEETS
+    assert len(_visible_sheets(output_workbook)) == 3
 
 
 def test_e2e_pingfeng_zero_change(detail_path, output_path):
@@ -226,7 +230,7 @@ def test_e2e_dirty_sample_still_has_three_sheets(tmp_path, generator):
     result = run_engine(out / 'detail.xlsx', out / 'exempt.xlsx',
                         output_path=out / 'out.xlsx')
     wb = load_workbook(out / 'out.xlsx')
-    assert tuple(wb.sheetnames) == ALLOWED_SHEETS
+    assert _visible_sheets(wb) == ALLOWED_SHEETS
     wb.close()
 
 
@@ -239,5 +243,5 @@ def test_e2e_with_room_variant_runs(tmp_path, generator):
     assert result.ok, result.error
     assert result.exempt_stats['带教室号记录'] > 0
     wb = load_workbook(out / 'out.xlsx')
-    assert tuple(wb.sheetnames) == ALLOWED_SHEETS
+    assert _visible_sheets(wb) == ALLOWED_SHEETS
     wb.close()

@@ -74,7 +74,7 @@ def test_college_template_and_multiple_exemption_files(tmp_path):
     assert weekly['理学院'].rate is None
     assert weekly['理学院'].calculated_days == 1
     with closing(load_workbook(out)) as wb:
-        assert wb.sheetnames == ['雁山（早）', '屏风']
+        assert [s for s in wb.sheetnames if s not in ('_系统校验元数据', '免勤核对')] == ['雁山（早）', '屏风']
         sheet = wb['雁山（早）']
         assert [sheet.cell(3, col).value for col in range(10, 13)] == ['周一', '周三', '周平均']
         assert sheet['G3'].value == 41

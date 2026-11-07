@@ -2476,6 +2476,13 @@ class MainWindow(QMainWindow):
                 k32.SetProcessWorkingSetSize(h_proc, max_size_t, max_size_t)
             except Exception:
                 pass
+        elif sys.platform.startswith('linux'):
+            try:
+                import ctypes
+                libc = ctypes.CDLL('libc.so.6')
+                libc.malloc_trim(0)
+            except Exception:
+                pass
 
     def _set_busy(self, busy: bool):
         """计算期间禁用一切会改变输入的控件，避免算到一半被改动。"""
@@ -3284,6 +3291,9 @@ class MainWindow(QMainWindow):
         self.restore_action.setFont(font)
         self.tray_menu.setDefaultAction(self.restore_action)
 
+        self.minimize_tray_action = self.tray_menu.addAction('后台最小化运行')
+        self.minimize_tray_action.triggered.connect(self.showMinimized)
+
         self.tray_menu.addSeparator()
 
         self.exit_action = self.tray_menu.addAction('彻底退出')
@@ -3292,6 +3302,15 @@ class MainWindow(QMainWindow):
         self.tray_icon.setContextMenu(self.tray_menu)
         self.tray_icon.activated.connect(self._on_tray_activated)
         self.tray_icon.show()
+
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        act_min = menu.addAction('后台最小化运行')
+        act_min.triggered.connect(self.showMinimized)
+        menu.addSeparator()
+        act_exit = menu.addAction('彻底退出')
+        act_exit.triggered.connect(self.clean_exit)
+        menu.exec(event.globalPos())
 
     def changeEvent(self, event):
         """捕获窗口状态变化，处理最小化到托盘。"""

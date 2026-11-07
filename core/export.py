@@ -1,24 +1,27 @@
 # -*- coding: utf-8 -*-
-"""结果导出：在**原始明细表副本**上回填免勤人数与学院出勤率。
+"""结果导出：在**原始明细表副本**上回填免勤人数与学院出勤率，并施加防篡改保护与移动端样式优化。
 
 硬约束：
-  * 只保留三张原始工作表：雁山（早）、雁山（晚）、屏风；不新增任何表。
+  * 只保留三张原始可见工作表：雁山（早）、雁山（晚）、屏风（另含 veryHidden 防篡改校验元数据表）。
   * 屏风表逐单元格零改动。
   * 绝不覆盖输入文件。
   * 出勤率写入同学院纵向合并单元格；合并区按学院行块归一化
     （修掉模板自带的 N69:N70 漏合并、O57:O59 与 N57:N58 不齐）。
-  * 出勤率列加宽，避免 Excel 显示为 ####。
+  * 出勤率列加宽（>= 13.5），避免 Excel 及移动端显示为 ####。
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import os
 from contextlib import contextmanager
+from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
-from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
 from openpyxl.utils import get_column_letter
 
 from .calc import ESTIMATE_RGB, estimate_source
@@ -26,7 +29,13 @@ from .model import CollegeRate, DetailModel
 from .parsing import strip_illegal
 
 ALLOWED_SHEETS = ('雁山（早）', '雁山（晚）', '屏风')
-RATE_WIDTH = 12.0
+TAMPER_META_SHEET = '_系统校验元数据'
+DEFAULT_SHEET_PASSWORD = 'sanzaowan2026'
+TAMPER_HMAC_KEY = b'jisuanqi-sanzaowan-hmac-sha256-key-2026'
+RATE_WIDTH = 13.5
+MOBILE_FONT_NAME = 'Microsoft YaHei'
+_THIN_SIDE = Side(style='thin', color='FF000000')
+_MERGED_BORDER = Border(left=_THIN_SIDE, right=_THIN_SIDE, top=_THIN_SIDE, bottom=_THIN_SIDE)
 
 
 class ExportResult:
@@ -88,6 +97,20 @@ def _merge_ranges_in_col(ws, col: int):
             if r.min_col <= col <= r.max_col and r.max_col >= col]
 
 
+def _ensure_merged_range_borders(ws, lo: int, hi: int, column: int) -> None:
+    """确保合并区域内的每个子单元格都带有显式细边框，防止 Apple Numbers / 移动端表格边框断裂。"""
+    for r in range(lo, hi + 1):
+        sub_cell = ws.cell(r, column)
+        b = sub_cell.border
+        if b is None or b.left is None or b.left.style is None or b.right is None or b.right.style is None:
+            sub_cell.border = Border(
+                left=b.left if (b and b.left and b.left.style) else _THIN_SIDE,
+                right=b.right if (b and b.right and b.right.style) else _THIN_SIDE,
+                top=b.top if (b and b.top and b.top.style) else _THIN_SIDE,
+                bottom=b.bottom if (b and b.bottom and b.bottom.style) else _THIN_SIDE,
+            )
+
+
 def _college_cell(ws, lo, hi, column, result):
     for area in _merge_ranges_in_col(ws, column):
         if area.max_row < lo or area.min_row > hi:
@@ -95,19 +118,197 @@ def _college_cell(ws, lo, hi, column, result):
         if area.min_col != column or area.max_col != column:
             raise ValueError(f'{ws.title} 的 {area} 合并跨越不同指标，无法安全回填')
         if (area.min_row, area.max_row) == (lo, hi):
+            _ensure_merged_range_borders(ws, lo, hi, column)
             return ws.cell(lo, column)
         ws.unmerge_cells(str(area))
         result.merged_normalized += 1
     if hi > lo:
         ws.merge_cells(start_row=lo, start_column=column, end_row=hi, end_column=column)
         result.merged_normalized += 1
+    _ensure_merged_range_borders(ws, lo, hi, column)
     return ws.cell(lo, column)
 
 
 # 估算标记：教室级免勤是按比例分摊出来的估算值，必须在格子上留下固定痕迹
 ESTIMATE_FILL = PatternFill(start_color=ESTIMATE_RGB, end_color=ESTIMATE_RGB,
                             fill_type='solid')
-ESTIMATE_FONT = Font(italic=True)
+ESTIMATE_FONT = Font(name=MOBILE_FONT_NAME, italic=True)
+
+
+def _standardize_mobile_sheet_style(ws) -> None:
+    """将工作表字体统一为跨平台移动端无衬线字体（Microsoft YaHei），同时保留原有的粗体/斜体/字号/颜色，并设置冻结窗格与网格线。"""
+    ws.freeze_panes = 'D4'
+    if ws.views and ws.views.sheetView:
+        ws.views.sheetView[0].showGridLines = True
+
+    # 确保 B 列已有的学院合并块也具备完整的子单元格边框
+    for rng in _merge_ranges_in_col(ws, 2):
+        if rng.min_col == 2 and rng.max_col == 2:
+            _ensure_merged_range_borders(ws, rng.min_row, rng.max_row, 2)
+
+    for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
+        for cell in row:
+            f = cell.font
+            if f is not None:
+                if f.name != MOBILE_FONT_NAME:
+                    cell.font = Font(
+                        name=MOBILE_FONT_NAME,
+                        size=f.size,
+                        bold=f.bold,
+                        italic=f.italic,
+                        vertAlign=f.vertAlign,
+                        underline=f.underline,
+                        strike=f.strike,
+                        color=f.color,
+                    )
+            else:
+                cell.font = Font(name=MOBILE_FONT_NAME)
+
+
+def apply_sheet_protection(
+    ws,
+    password: str = DEFAULT_SHEET_PASSWORD,
+    detail: Optional[DetailModel] = None,
+) -> None:
+    """启用 OOXML 工作表级密码保护并锁定关键考勤数据列（应到人数、实到人数、免勤人数、出勤率）。"""
+    locked_prot = Protection(locked=True)
+    unlocked_prot = Protection(locked=False)
+
+    sheet_name = ws.title
+    locked_cols = set(range(1, 6))  # 序号、学院、教室、专业班级、应到人数 (Cols 1..5)
+    if detail is not None:
+        for room in detail.rooms_of(sheet_name):
+            for col in room.actual_cols.values():
+                if col:
+                    locked_cols.add(col)
+            for col in room.exempt_cols.values():
+                if col:
+                    locked_cols.add(col)
+        for col in detail.exempt_cols_by_sheet.get(sheet_name, {}).values():
+            if col:
+                locked_cols.add(col)
+        for col in detail.rate_cols_by_sheet.get(sheet_name, {}).values():
+            if col:
+                locked_cols.add(col)
+        for col in detail.protected_cols.get(sheet_name, ()):
+            if col:
+                locked_cols.add(col)
+    else:
+        locked_cols.update(range(1, ws.max_column + 1))
+
+    for r in range(1, ws.max_row + 1):
+        for c in range(1, ws.max_column + 1):
+            cell = ws.cell(r, c)
+            if r <= 3 or c in locked_cols:
+                cell.protection = locked_prot
+            else:
+                cell.protection = unlocked_prot
+
+    ws.protection.sheet = True
+    if password:
+        ws.protection.set_password(password)
+
+
+def _canonical_cell_value(val) -> str:
+    if val is None:
+        return ''
+    if isinstance(val, bool):
+        return 'TRUE' if val else 'FALSE'
+    if isinstance(val, int):
+        return f'I:{val}'
+    if isinstance(val, float):
+        if val.is_integer():
+            return f'I:{int(val)}'
+        return f'F:{val:.8f}'
+    return f'S:{str(val).strip()}'
+
+
+def _compute_cell_hmac(sheet_name: str, row: int, col: int, val_repr: str, secret_key: bytes = TAMPER_HMAC_KEY) -> str:
+    payload = f'{sheet_name}|{row}|{col}|{val_repr}'.encode('utf-8')
+    return hmac.new(secret_key, payload, hashlib.sha256).hexdigest()
+
+
+def generate_tamper_metadata(
+    wb: Workbook,
+    detail: Optional[DetailModel] = None,
+    rates: Optional[List[CollegeRate]] = None,
+    secret_key: bytes = TAMPER_HMAC_KEY,
+):
+    """生成隐藏防篡改校验工作表 `_系统校验元数据`（veryHidden），写入关键单元格 HMAC-SHA256 签名。"""
+    if TAMPER_META_SHEET in wb.sheetnames:
+        del wb[TAMPER_META_SHEET]
+
+    ws_meta = wb.create_sheet(TAMPER_META_SHEET)
+    ws_meta.sheet_state = 'veryHidden'
+    ws_meta.append(['sheet_name', 'row', 'col', 'val_repr', 'hmac_sha256'])
+
+    for sheet_name in ('雁山（早）', '雁山（晚）'):
+        if sheet_name not in wb.sheetnames:
+            continue
+        ws = wb[sheet_name]
+        for r in range(1, ws.max_row + 1):
+            for c in range(1, ws.max_column + 1):
+                val = ws.cell(r, c).value
+                val_repr = _canonical_cell_value(val)
+                sig = _compute_cell_hmac(sheet_name, r, c, val_repr, secret_key=secret_key)
+                ws_meta.append([sheet_name, r, c, val_repr, sig])
+
+    return ws_meta
+
+
+def verify_workbook_integrity(
+    file_path_or_wb: Union[str, Path, Workbook],
+    secret_key: bytes = TAMPER_HMAC_KEY,
+) -> Tuple[bool, List[str]]:
+    """校验导出工作簿的防篡改签名完整性，使用 hmac.compare_digest 恒定时间比对。"""
+    close_after = False
+    if isinstance(file_path_or_wb, Workbook):
+        wb = file_path_or_wb
+    else:
+        wb = load_workbook(file_path_or_wb, data_only=True)
+        close_after = True
+
+    violations: List[str] = []
+    try:
+        if TAMPER_META_SHEET not in wb.sheetnames:
+            return False, [f'缺失防篡改校验元数据表: {TAMPER_META_SHEET}']
+
+        ws_meta = wb[TAMPER_META_SHEET]
+        checked_rows = 0
+        for row_idx in range(2, ws_meta.max_row + 1):
+            sheet_name = ws_meta.cell(row_idx, 1).value
+            r = ws_meta.cell(row_idx, 2).value
+            c = ws_meta.cell(row_idx, 3).value
+            expected_repr = ws_meta.cell(row_idx, 4).value or ''
+            expected_sig = ws_meta.cell(row_idx, 5).value or ''
+
+            if not sheet_name or r is None or c is None:
+                continue
+            r_int, c_int = int(r), int(c)
+            checked_rows += 1
+
+            if sheet_name not in wb.sheetnames:
+                violations.append(f'工作表缺失: {sheet_name}')
+                continue
+
+            ws = wb[sheet_name]
+            actual_val = ws.cell(r_int, c_int).value
+            actual_repr = _canonical_cell_value(actual_val)
+            actual_sig = _compute_cell_hmac(sheet_name, r_int, c_int, actual_repr, secret_key=secret_key)
+
+            if not hmac.compare_digest( str(actual_sig), str(expected_sig) ):
+                coord = f'{get_column_letter(c_int)}{r_int}'
+                violations.append(
+                    f'{sheet_name}!{coord} 数据被篡改（原始摘要值={expected_repr}, 当前值={actual_repr}）'
+                )
+
+        if checked_rows == 0:
+            violations.append('防篡改元数据表为空，未包含有效签名记录')
+
+        return len(violations) == 0, violations
+    finally:
+        if close_after:
+            wb.close()
 
 
 def export(detail_path: str,
@@ -242,8 +443,18 @@ def export(detail_path: str,
                     letter = get_column_letter(col)
                     ws.column_dimensions[letter].width = RATE_WIDTH
 
+            # ---- 4. 移动端兼容排版（字体归一化、冻结窗格、显示网格线、合并区边框） ----
+            _standardize_mobile_sheet_style(ws)
+
+            # ---- 5. 工作表级防篡改密码锁定 ----
+            apply_sheet_protection(ws, password=DEFAULT_SHEET_PASSWORD, detail=detail)
+
         if append_report:
             append_report(wb)
+
+        # ---- 6. 写入隐藏防篡改校验元数据表 `_系统校验元数据` ----
+        generate_tamper_metadata(wb, detail=detail, rates=rates)
+
         with atomic_output(output_path) as tmp_path:
             wb.save(tmp_path)
     finally:

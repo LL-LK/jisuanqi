@@ -23,6 +23,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tarfile
 import zipfile
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -430,6 +431,259 @@ def stage_7_build_inno_setup(args: argparse.Namespace, version: str, dist_dir: s
     return setup_path
 
 
+# ------------------------------------------------------------------ Stage 6B/6C/6D: Multi-OS & Clean Source
+EXCLUDED_SOURCE_DIRS = {
+    'tests', 'tests_e2e', '_synthetic', 'data_sample', '.pytest_cache',
+    '.hypothesis', '__pycache__', '.git', '.agents', '.buildenv', '.venv',
+    'venv', 'build', 'dist', 'dist_linux', '发布版', '发布包', 'node_modules', 'docs',
+}
+EXCLUDED_SOURCE_FILES = {
+    'pytest.ini', 'requirements-dev.txt', 'e2e_report.json',
+    'test_double_count.py',
+}
+
+
+def _is_test_or_excluded_relpath(rel_parts: Tuple[str, ...]) -> bool:
+    if any(p in EXCLUDED_SOURCE_DIRS for p in rel_parts[:-1]):
+        return True
+    fname = rel_parts[-1]
+    if fname in EXCLUDED_SOURCE_FILES:
+        return True
+    low = fname.lower()
+    if low.startswith('test_') or low.endswith('_test.py') or low.endswith(('.pyc', '.pyo', '.db', '.db-wal', '.db-shm')):
+        return True
+    return False
+
+
+def build_clean_source_packages(dist_dir: str) -> List[str]:
+    """构建不含任何测试组件的纯净源码包 (.zip 与 .tar.gz)。"""
+    os.makedirs(dist_dir, exist_ok=True)
+    zip_name = "三早一晚免勤自动统计_Source源码包.zip"
+    tar_name = "三早一晚免勤自动统计_Source源码包.tar.gz"
+    zip_path = os.path.join(dist_dir, zip_name)
+    tar_path = os.path.join(dist_dir, tar_name)
+
+    for p in (zip_path, tar_path):
+        if os.path.exists(p):
+            os.remove(p)
+
+    source_files: List[Tuple[str, str]] = []
+    for root, dirs, files in os.walk(DESKTOP_DIR):
+        dirs[:] = sorted(d for d in dirs if d not in EXCLUDED_SOURCE_DIRS)
+        for fname in sorted(files):
+            full_p = os.path.join(root, fname)
+            rel_p = os.path.relpath(full_p, DESKTOP_DIR)
+            parts = tuple(rel_p.replace("\\", "/").split("/"))
+            if _is_test_or_excluded_relpath(parts):
+                continue
+            arc_p = "三早一晚免勤自动统计_Source/" + "/".join(parts)
+            source_files.append((full_p, arc_p))
+
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for full_p, arc_p in source_files:
+            zf.write(full_p, arcname=arc_p)
+
+    with tarfile.open(tar_path, 'w:gz') as tf:
+        for full_p, arc_p in source_files:
+            tf.add(full_p, arcname=arc_p)
+
+    for pkg_p, pkg_n in ((zip_path, zip_name), (tar_path, tar_name)):
+        digest = sha256_file(pkg_p)
+        with open(pkg_p + '.sha256', 'w', encoding='utf-8') as fh:
+            fh.write(f"{digest}  {pkg_n}\n")
+        log_success(f"纯净源码包产出成功 (零测试组件): {pkg_n} ({os.path.getsize(pkg_p) / 1048576:.2f} MB)")
+
+    return [zip_path, tar_path]
+
+
+def build_macos_package(dist_dir: str, version: str) -> str:
+    """构建 macOS Universal (.app Bundle) 便携发布包 (.tar.gz)，不含任何测试组件。"""
+    os.makedirs(dist_dir, exist_ok=True)
+    tar_name = "三早一晚免勤自动统计_macOS便携版.tar.gz"
+    tar_path = os.path.join(dist_dir, tar_name)
+    if os.path.exists(tar_path):
+        os.remove(tar_path)
+
+    import io
+    prefix = "三早一晚免勤自动统计_macOS"
+    app_prefix = f"{prefix}/三早一晚免勤自动统计.app/Contents"
+
+    info_plist = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDisplayName</key>
+    <string>三早一晚免勤自动统计</string>
+    <key>CFBundleExecutable</key>
+    <string>AttendanceStats</string>
+    <key>CFBundleIdentifier</key>
+    <string>org.sanzaowan.attendancestats</string>
+    <key>CFBundleName</key>
+    <string>AttendanceStats</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>{version}</string>
+    <key>CFBundleVersion</key>
+    <string>{version}</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+""".encode("utf-8")
+
+    macos_launcher = """#!/usr/bin/env bash
+set -e
+DIR="$(cd "$(dirname "$0")/../Resources/app" && pwd)"
+export PYTHONPATH="$DIR:$PYTHONPATH"
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$DIR/app.py" "$@"
+else
+    exec python "$DIR/app.py" "$@"
+fi
+""".encode("utf-8")
+
+    run_command = """#!/usr/bin/env bash
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+APP_BIN="$HERE/三早一晚免勤自动统计.app/Contents/MacOS/AttendanceStats"
+chmod +x "$APP_BIN" 2>/dev/null || true
+exec "$APP_BIN" "$@"
+""".encode("utf-8")
+
+    def _add_bytes(tf: tarfile.TarFile, arcname: str, data: bytes, mode: int = 0o644) -> None:
+        ti = tarfile.TarInfo(name=arcname)
+        ti.size = len(data)
+        ti.mtime = int(time.time())
+        ti.mode = mode
+        tf.addfile(ti, io.BytesIO(data))
+
+    with tarfile.open(tar_path, 'w:gz') as tf:
+        _add_bytes(tf, f"{app_prefix}/Info.plist", info_plist, mode=0o644)
+        _add_bytes(tf, f"{app_prefix}/MacOS/AttendanceStats", macos_launcher, mode=0o755)
+        _add_bytes(tf, f"{prefix}/run_mac.command", run_command, mode=0o755)
+
+        # 打包核心运行时文件至 Contents/Resources/app（严格排除测试组件）
+        for rel_item in ('app.py', 'cli.py', 'requirements.txt', '免勤词典.xlsx', '使用说明.md', 'README.md', '隐私扫描报告.md'):
+            fp = os.path.join(DESKTOP_DIR, rel_item)
+            if os.path.exists(fp):
+                tf.add(fp, arcname=f"{app_prefix}/Resources/app/{rel_item}")
+                if rel_item in ('免勤词典.xlsx', '使用说明.md', 'README.md', '隐私扫描报告.md'):
+                    tf.add(fp, arcname=f"{prefix}/{rel_item}")
+
+        for folder in ('core', 'assets'):
+            folder_p = os.path.join(DESKTOP_DIR, folder)
+            for root, dirs, files in os.walk(folder_p):
+                dirs[:] = [d for d in dirs if d != '__pycache__']
+                for fname in sorted(files):
+                    if fname.endswith(('.pyc', '.pyo')):
+                        continue
+                    full_p = os.path.join(root, fname)
+                    rel_p = os.path.relpath(full_p, DESKTOP_DIR).replace("\\", "/")
+                    tf.add(full_p, arcname=f"{app_prefix}/Resources/app/{rel_p}")
+
+    digest = sha256_file(tar_path)
+    with open(tar_path + '.sha256', 'w', encoding='utf-8') as fh:
+        fh.write(f"{digest}  {tar_name}\n")
+    log_success(f"macOS 便携版产出成功: {tar_name} ({os.path.getsize(tar_path) / 1048576:.2f} MB)")
+    return tar_path
+
+
+def build_huawei_openeuler_package(dist_dir: str, version: str) -> List[str]:
+    """构建华为平台 (Huawei Kunpeng / EulerOS / openEuler / UOS / Kylin) 与 Linux 便携版 (.tar.gz)。"""
+    os.makedirs(dist_dir, exist_ok=True)
+    linux_tar = os.path.join(dist_dir, "三早一晚免勤自动统计_Linux便携版.tar.gz")
+    huawei_tar = os.path.join(dist_dir, "三早一晚免勤自动统计_华为openEuler便携版.tar.gz")
+
+    linux_bin = os.path.join(DESKTOP_DIR, 'dist_linux', 'AttendanceStats')
+    if not os.path.exists(linux_bin):
+        linux_bin = os.path.join(DESKTOP_DIR, 'dist', 'AttendanceStats')
+
+    import io
+
+    huawei_launcher = """#!/usr/bin/env bash
+# 华为平台 (openEuler / EulerOS / Kylin / UOS) & 通用 Linux 启动器
+set -e
+HERE="$(cd "$(dirname "$0")" && pwd)"
+export LD_LIBRARY_PATH="$HERE/lib:$HERE:$LD_LIBRARY_PATH"
+export QT_AUTO_SCREEN_SCALE_FACTOR=1
+if [ -z "$DISPLAY" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+    export QT_QPA_PLATFORM=offscreen
+fi
+if [ -x "$HERE/三早一晚免勤自动统计" ]; then
+    exec "$HERE/三早一晚免勤自动统计" "$@"
+elif command -v python3 >/dev/null 2>&1; then
+    exec python3 "$HERE/runtime/app.py" "$@"
+else
+    exec python "$HERE/runtime/app.py" "$@"
+fi
+""".encode("utf-8")
+
+    desktop_entry = f"""[Desktop Entry]
+Type=Application
+Version={version}
+Name=三早一晚免勤自动统计
+Comment=三早一晚免勤自动统计系统 (支持华为 openEuler / Linux 平台)
+Exec=./run_huawei_linux.sh
+Terminal=false
+Categories=Office;Education;Utility;
+""".encode("utf-8")
+
+    def _add_bytes(tf: tarfile.TarFile, arcname: str, data: bytes, mode: int = 0o644) -> None:
+        ti = tarfile.TarInfo(name=arcname)
+        ti.size = len(data)
+        ti.mtime = int(time.time())
+        ti.mode = mode
+        tf.addfile(ti, io.BytesIO(data))
+
+    built_paths = []
+    for target_tar in (linux_tar, huawei_tar):
+        if os.path.exists(target_tar):
+            os.remove(target_tar)
+        prefix = "三早一晚免勤自动统计"
+        manifest_entries = []
+        with tarfile.open(target_tar, 'w:gz') as tf:
+            if os.path.exists(linux_bin):
+                tf.add(linux_bin, arcname=f"{prefix}/三早一晚免勤自动统计")
+                manifest_entries.append(f"{sha256_file(linux_bin)}  三早一晚免勤自动统计")
+            _add_bytes(tf, f"{prefix}/run_huawei_linux.sh", huawei_launcher, mode=0o755)
+            _add_bytes(tf, f"{prefix}/attendance.desktop", desktop_entry, mode=0o644)
+
+            for doc_name in ('免勤词典.xlsx', '使用说明.md', 'README.md', '隐私扫描报告.md'):
+                fp = os.path.join(DESKTOP_DIR, doc_name)
+                if os.path.exists(fp):
+                    tf.add(fp, arcname=f"{prefix}/{doc_name}")
+                    manifest_entries.append(f"{sha256_file(fp)}  {doc_name}")
+
+            # 附带轻量纯 Python 跨架构 runtime 以支持鲲鹏 ARM64 / 昇腾 / LoongArch64 原生运行
+            for rel_item in ('app.py', 'cli.py', 'requirements.txt'):
+                fp = os.path.join(DESKTOP_DIR, rel_item)
+                if os.path.exists(fp):
+                    tf.add(fp, arcname=f"{prefix}/runtime/{rel_item}")
+            for folder in ('core', 'assets'):
+                folder_p = os.path.join(DESKTOP_DIR, folder)
+                for root, dirs, files in os.walk(folder_p):
+                    dirs[:] = [d for d in dirs if d != '__pycache__']
+                    for fname in sorted(files):
+                        if fname.endswith(('.pyc', '.pyo')):
+                            continue
+                        full_p = os.path.join(root, fname)
+                        rel_p = os.path.relpath(full_p, DESKTOP_DIR).replace("\\", "/")
+                        tf.add(full_p, arcname=f"{prefix}/runtime/{rel_p}")
+
+            sha_bytes = ("\n".join(manifest_entries) + "\n").encode("utf-8")
+            _add_bytes(tf, f"{prefix}/SHA256.txt", sha_bytes, mode=0o644)
+
+        tar_name = os.path.basename(target_tar)
+        digest = sha256_file(target_tar)
+        with open(target_tar + '.sha256', 'w', encoding='utf-8') as fh:
+            fh.write(f"{digest}  {tar_name}\n")
+        log_success(f"Linux/华为平台发布包产出成功: {tar_name} ({os.path.getsize(target_tar) / 1048576:.2f} MB)")
+        built_paths.append(target_tar)
+
+    return built_paths
+
+
 # ------------------------------------------------------------------ Stage 8
 def stage_8_manifest_and_verify(args: argparse.Namespace, dist_dir: str, version: str) -> None:
     """阶段 8：生成统一发布包 SHA256.txt 并执行自校验。"""
@@ -441,7 +695,7 @@ def stage_8_manifest_and_verify(args: argparse.Namespace, dist_dir: str, version
     for name in sorted(os.listdir(dist_dir)):
         fp = os.path.join(dist_dir, name)
         # 只收录终版交付物 (.zip 与 .exe)，排除 sidecar 与旧 manifest
-        if os.path.isfile(fp) and (name.lower().endswith('.zip') or name.lower().endswith('.exe')):
+        if os.path.isfile(fp) and (name.lower().endswith('.zip') or name.lower().endswith('.exe') or name.lower().endswith('.tar.gz')):
             digest = sha256_file(fp)
             size_mb = os.path.getsize(fp) / 1048576
             deliverables.append((name, digest, size_mb))
@@ -509,7 +763,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.clean:
         log_info("正在执行全面深度清理 (--clean)...")
-        for folder in ['build', 'dist', '发布版', '发布包']:
+        for folder in ['build', 'dist', 'dist_linux', '发布版', '发布包']:
             p = os.path.join(DESKTOP_DIR, folder)
             if os.path.exists(p):
                 shutil.rmtree(p, ignore_errors=True)
@@ -523,6 +777,10 @@ def main(argv: list[str] | None = None) -> int:
         stage_4_pyinstaller(args)
         stage_5_assemble_release(args)
         stage_6_build_portable(args, version, dist_dir)
+        if not getattr(args, 'skip_portable', False):
+            build_clean_source_packages(dist_dir)
+            build_macos_package(dist_dir, version)
+            build_huawei_openeuler_package(dist_dir, version)
         stage_7_build_inno_setup(args, version, dist_dir)
         stage_8_manifest_and_verify(args, dist_dir, version)
     except KeyboardInterrupt:

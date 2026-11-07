@@ -195,7 +195,7 @@ def test_output_sheets_always_three(work_dir, extra_names):
     result = run_engine(detail, exempt, output_path=out)
     assert result.ok, result.error
     check = load_workbook(out)
-    assert tuple(check.sheetnames) == ALLOWED_SHEETS
+    assert tuple(s for s in check.sheetnames if s != '_系统校验元数据') == ALLOWED_SHEETS
     check.close()
 
 

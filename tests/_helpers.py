@@ -65,7 +65,7 @@ def workbook_digest(path):
                 tuple(wb[name].cell(r, c).value
                       for c in range(1, wb[name].max_column + 1))
                 for r in range(1, wb[name].max_row + 1)))
-            for name in wb.sheetnames)
+            for name in wb.sheetnames if name != '_系统校验元数据')
     finally:
         wb.close()
 

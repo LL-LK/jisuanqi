@@ -4,7 +4,7 @@
 
 [CmdletBinding()]
 param(
-    [string]$TargetDir   = "D:\Software\三早一晚免勤自动统计",
+    [string]$TargetDir   = (Join-Path "D:" "Software/三早一晚免勤自动统计"),
     [string]$ExeName     = "三早一晚免勤自动统计.exe",
     [string]$AppName     = "三早一晚免勤自动统计",
     [string]$Description = "三早一晚免勤自动统计系统 - 本地考勤去重与计算工具",

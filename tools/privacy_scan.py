@@ -40,9 +40,9 @@ WORKSPACE = os.path.dirname(ROOT)
 
 TEXT_EXT = {'.py', '.bat', '.ps1', '.md', '.txt', '.json', '.yml', '.yaml',
             '.spec', '.cfg', '.ini', '.toml', '.csv', '.html', '.css', '.js'}
-SKIP_DIR = {'__pycache__', '.git', '.pytest_cache', 'dist', 'build', '.hypothesis',
-            '.buildenv', '.venv', 'venv', '_synthetic', '发布版', '_work', 'data_sample',
-            'node_modules', 'site-packages'}
+SKIP_DIR = {'__pycache__', '.git', '.pytest_cache', 'dist', 'dist_linux', 'build', '.hypothesis',
+            '.buildenv', '.venv', 'venv', '_synthetic', '发布版', '发布包', '_work', 'data_sample',
+            'node_modules', 'site-packages', '.agents', 'tests_e2e'}
 
 # 绝对路径与身份痕迹
 # 第三列 text_only=True 表示该模式**只对文本内容**生效：

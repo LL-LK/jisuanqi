@@ -308,7 +308,7 @@ def test_output_has_exactly_three_sheets(real_run, baseline):
     _result, output, _detail, _exempt = real_run
     wb = load_workbook(output, read_only=True)
     try:
-        assert wb.sheetnames == list(SHEETS) + ['屏风']
+        assert [s for s in wb.sheetnames if s not in ('_系统校验元数据', '免勤核对')] == list(SHEETS) + ['屏风']
     finally:
         wb.close()
 

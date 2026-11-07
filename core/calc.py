@@ -150,6 +150,8 @@ class Calculator:
         * 教室人数按应到人数比例分摊，并以该教室应到人数封顶；超出部分
           记入超额异常，不做二次分摊（学院总免勤仍按唯一学号去重值计算）。
         """
+        if getattr(self, '_room_exemptions_cache', None) is not None:
+            return self._room_exemptions_cache
         out: Dict[Tuple[str, int, str], int] = {}
         self.overflow = []
         self.estimated_cells = set()
@@ -247,6 +249,7 @@ class Calculator:
                             self.overflow.append(
                                 (sheet, college_name, day, r.room, out[key] - cap))
                             out[key] = cap
+        self._room_exemptions_cache = out
         return out
 
     # ------------------------------------------------------------ 学院出勤率
@@ -355,19 +358,33 @@ class Calculator:
                             actual_sum = None
                         else:
                             actual_sum = sum(v for _, v in valid_pairs)
-                            if denominator is not None and denominator <= 0:
+                            if missing_rooms:
+                                valid_expected = sum(max(r.expected or 0, 0) for r, _ in valid_pairs)
+                                room_exempts = getattr(self, '_room_exemptions_cache', None)
+                                if room_exempts is None:
+                                    room_exempts = self.room_exemptions()
+                                valid_exempt = sum(room_exempts.get((sheet, r.row, day), 0) for r, _ in valid_pairs)
+                                eff_denominator = valid_expected - valid_exempt
+                                eff_expected = valid_expected
+                                eff_exempt = valid_exempt
+                            else:
+                                eff_denominator = denominator
+                                eff_expected = expected
+                                eff_exempt = exempt
+
+                            if eff_denominator is not None and eff_denominator <= 0:
                                 rate = 1.0
                                 day_rates.append(rate)
                                 status = '全员免勤（满勤）'
                                 note = ('学院总应到 %s − 当次总免勤 %d = %s ≤ 0，按 100.00%% 满勤出勤计入。'
-                                        % (expected, exempt, denominator))
+                                        % (eff_expected, eff_exempt, eff_denominator))
                                 anomalies.append('全员免勤（免勤人数达到或超出应到人数）')
-                            elif denominator is None:
+                            elif eff_denominator is None:
                                 status = '无法确定应到人数'
                                 note = '学院未标注总人数且无有效教室应到合计，无法确定考勤分母。'
                                 rate = None
                             else:
-                                rate = actual_sum / denominator
+                                rate = actual_sum / eff_denominator
                                 day_rates.append(rate)
                                 real_college = self._name_map.get(college, college)
                                 inc_scopes = getattr(self.agg, 'incomplete_scopes', set())
@@ -391,13 +408,14 @@ class Calculator:
                                 elif missing_rooms:
                                     status = '部分教室缺失（已按有效实到计算）'
                                     note = ('该学院该次共 %d 间教室，其中 %d 间未录入实到%s；'
-                                            '按已录入教室实到合计 %d 算得出勤率 %.2f%%。'
-                                            % (len(day_rooms), len(missing_rooms), note_prefix, actual_sum, rate * 100))
+                                            '按有效教室实到合计 %d ÷ (有效教室应到 %d − 有效教室免勤 %d) 算得出勤率 %.2f%%。'
+                                            % (len(day_rooms), len(missing_rooms), note_prefix,
+                                               actual_sum, valid_expected, valid_exempt, rate * 100))
                                 elif rate > 1:
                                     status = '已计算（超过100%，需复核）'
                                     note = ('按公式算得 %.2f%%%s，实到合计 %d 大于考勤基数 %d，'
                                             '需核对免勤与实到的统计口径。'
-                                            % (rate * 100, note_prefix, actual_sum, denominator))
+                                            % (rate * 100, note_prefix, actual_sum, eff_denominator))
                                     anomalies.append('出勤率超过 100%')
                                 else:
                                     status = '完整'

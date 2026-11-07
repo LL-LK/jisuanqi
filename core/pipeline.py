@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -38,6 +39,8 @@ class RunConfig:
     exempt_paths: tuple[str, ...] = ()
     college_exempt: Optional[bool] = None  # 未指定时按模板合并结构判断
     include_exempt_summary: bool = False
+    db_path: Optional[str] = None          # [M1 新增] 指定数据库路径 (None 表示采用默认路径)
+    enable_storage: bool = True            # [M1 新增] 历史记录入库开关 (默认开启)
     # 注：本口径「免勤不封顶」，因此不提供任何封顶开关——
     # 留一个可切到被否口径的旋钮，比没有旋钮更危险。
 
@@ -66,6 +69,7 @@ class RunResult:
     college_exempt: bool = False
     summary_template_rates: List[Dict] = field(default_factory=list)
     college_names: Dict[str, str] = field(default_factory=dict)
+    storage_run_id: Optional[int] = None
 
 
 def _anomaly(kind: str, level: str, scope: str, note: str) -> Dict:
@@ -82,6 +86,7 @@ def output_path_for(config: RunConfig) -> str:
 
 def run(config: RunConfig) -> RunResult:
     """执行一次完整统计。"""
+    start_time = time.perf_counter()
     result = RunResult()
     try:
         if not config.detail_path or not os.path.exists(config.detail_path):
@@ -123,7 +128,7 @@ def run(config: RunConfig) -> RunResult:
                     f'表内标题为第 {title_week} 周，本次按所选第 {config.week_no} 周统计。'))
 
         dictionary = Dictionary.load(config.dictionary_path)
-        identity_check = result.college_exempt or len(exempt_paths) > 1
+        identity_check = bool(result.college_exempt or exempt_paths)
         target_names = ([college for _, college, _ in attendance.rows] if attendance else
                         list(dict.fromkeys(block.name for block in detail.blocks if block.name)))
         result.college_names = {name: _canonical_college(name, dictionary) for name in target_names}
@@ -317,6 +322,22 @@ def run(config: RunConfig) -> RunResult:
         result.room_students = getattr(calc, 'room_students_map', {})
         result.student_details = getattr(agg, 'student_map', {})
         result.ok = True
+
+        duration_ms = int((time.perf_counter() - start_time) * 1000)
+
+        # ---- M1 数据持久化入库 Hook ----
+        if getattr(config, 'enable_storage', True):
+            try:
+                from .storage import AttendanceStorage
+                storage = AttendanceStorage(db_path=getattr(config, 'db_path', None))
+                run_id = storage.record_run(config, result, duration_ms=duration_ms)
+                result.storage_run_id = run_id
+                result.summary['run_id'] = run_id
+            except Exception as exc:
+                result.anomalies.append(_anomaly(
+                    '计算记录存储异常', 'warn', '本地数据库',
+                    f'自动保存至本地历史数据库失败: {exc}（结果文件已正常生成，不受影响）'
+                ))
     except Exception as exc:                      # noqa: BLE001 - 界面需要展示原因
         result.ok = False
         result.error = '%s: %s' % (type(exc).__name__, exc)

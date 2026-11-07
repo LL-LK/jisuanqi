@@ -154,8 +154,8 @@ def test_calc_partial_missing_rooms_calculates_with_warning(tmp_path):
     rates = [r for r in calc.college_rates() if r.day == "周一"]
     assert len(rates) == 1
     rate = rates[0]
-    # 出勤率不为 None！实到 = 95 + 85 = 180，分母 = 300，出勤率 = 60.0%
-    assert rate.rate == pytest.approx(0.60)
+    # 出勤率不为 None！实到 = 95 + 85 = 180，有效分母 = 100 + 100 = 200，出勤率 = 90.0%
+    assert rate.rate == pytest.approx(0.90)
     assert rate.actual == 180
     assert "部分教室缺失（已按有效实到计算）" in rate.status
     assert "4203" in rate.note

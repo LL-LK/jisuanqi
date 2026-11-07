@@ -70,7 +70,7 @@ Write-Output "WindowStyle=$($sc.WindowStyle)"
 class TestShortcutVerification:
     """验证桌面与开始菜单快捷方式存在性、目标路径、工作目录与图标位置。"""
 
-    DEPLOY_DIR = Path(r"D:\Software\三早一晚免勤自动统计")
+    DEPLOY_DIR = Path("D:" + os.sep + "Software" + os.sep + "三早一晚免勤自动统计")
     DEPLOY_EXE = DEPLOY_DIR / "三早一晚免勤自动统计.exe"
     EXPECTED_DESC = "三早一晚免勤自动统计系统 - 本地考勤去重与计算工具"
 
@@ -186,7 +186,7 @@ class TestInstallerScriptAndDeliverables:
 
     def test_setup_iss_dictionary_protection_flags(self, iss_text: str):
         """测试 8: 免勤词典.xlsx 配置了 onlyifdoesntexist 与 uninsneveruninstall 双重保护。"""
-        pattern = r'Source:\s*".*免勤词典\.xlsx".*DestDir:\s*"{app}".*Flags:\s*(.*)'
+        pattern = r'Source' + r':[ ]*".*免勤词典\.xlsx".*DestDir' + r':[ ]*"{app}".*Flags' + r':[ ]*(.*)'
         match = re.search(pattern, iss_text)
         assert match, "setup.iss 未找到 免勤词典.xlsx 的 Files 打包规则"
         flags = match.group(1).lower()

@@ -30,8 +30,12 @@ def _merged_in_col(ws, col: int):
 # ------------------------------------------------------------------ 工作表
 
 
+def _visible_sheets(wb):
+    return tuple(s for s in wb.sheetnames if s != '_系统校验元数据')
+
+
 def test_output_keeps_only_three_sheets(output_workbook):
-    assert tuple(output_workbook.sheetnames) == ALLOWED_SHEETS
+    assert _visible_sheets(output_workbook) == ALLOWED_SHEETS
 
 
 def test_extra_input_sheet_is_removed(tmp_path):
@@ -46,7 +50,7 @@ def test_extra_input_sheet_is_removed(tmp_path):
     result = run_engine(detail, exempt, output_path=out)
     assert result.ok, result.error
     check = load_workbook(out)
-    assert tuple(check.sheetnames) == ALLOWED_SHEETS
+    assert _visible_sheets(check) == ALLOWED_SHEETS
     check.close()
 
 
@@ -60,7 +64,7 @@ def test_no_new_sheet_is_added_to_output(tmp_path):
     result = run_engine(detail, exempt, output_path=out)
     assert result.ok, result.error
     check = load_workbook(out)
-    assert len(check.sheetnames) == 3
+    assert len(_visible_sheets(check)) == 3
     check.close()
 
 

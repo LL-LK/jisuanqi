@@ -208,7 +208,7 @@ def test_output_sheet_names_always_three(extra, tmp_path):
     assert result.ok
     wb = load_workbook(out, read_only=True)
     try:
-        assert wb.sheetnames == [synthetic.SHEET_EARLY, synthetic.SHEET_LATE,
+        assert [s for s in wb.sheetnames if s != '_系统校验元数据'] == [synthetic.SHEET_EARLY, synthetic.SHEET_LATE,
                                  synthetic.SHEET_PINGFENG]
     finally:
         wb.close()
