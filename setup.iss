@@ -14,7 +14,7 @@
 
 #define MyAppName "本地考勤工具"
 #define MyAppVerName "本地考勤工具"
-#define MyAppPublisher "桂林理工大学早晚自习考勤工作组 / LL-LK"
+#define MyAppPublisher "自习考勤自动化工作组 / LL-LK"
 #define MyAppURL "https://github.com/LL-LK/sanzao-wan-attendance-web"
 #define MyAppExeName "三早一晚免勤自动统计.exe"
 

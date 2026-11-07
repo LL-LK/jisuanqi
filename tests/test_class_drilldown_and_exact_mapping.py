@@ -59,17 +59,17 @@ def test_class_exact_room_allocation_and_conservation():
     # 2名学生来自地信26-1（应精准落入 6508）
     # 1名学生来自资勘26-1（未被抽查班级，属于余量，按容量分摊）
     rec1 = ExemptRecord(
-        sid="3262010800001", name="张三", college="地科学院", class_text="地球信息科学与技术2026-1",
+        sid="9900010800001", name="张三", college="地科学院", class_text="地球信息科学与技术2026-1",
         class_key="地信261", weeks={7}, weekdays={"周一"}, session="早自习", campus="雁山",
         room="", reason="选修课", group_size=None, source="全免勤大表", row=3
     )
     rec2 = ExemptRecord(
-        sid="3262010800002", name="李四", college="地科学院", class_text="地球信息26-1班",
+        sid="9900010800002", name="李四", college="地科学院", class_text="地球信息26-1班",
         class_key="地信261", weeks={7}, weekdays={"周一"}, session="早自习", campus="雁山",
         room="", reason="社团", group_size=None, source="全免勤大表", row=4
     )
     rec3 = ExemptRecord(
-        sid="3262010800003", name="王五", college="地科学院", class_text="资源勘查工程26-1班",
+        sid="9900010800003", name="王五", college="地科学院", class_text="资源勘查工程26-1班",
         class_key="资勘261", weeks={7}, weekdays={"周一"}, session="早自习", campus="雁山",
         room="", reason="公假", group_size=None, source="全免勤大表", row=5
     )

@@ -17,7 +17,7 @@ VSVersionInfo(
       [
       StringTable(
         '080404b0',
-        [StringStruct('CompanyName', '桂林理工大学早晚自习考勤工作组'),
+        [StringStruct('CompanyName', '自习考勤自动化工作组'),
         StringStruct('FileDescription', '本地考勤工具'),
         StringStruct('FileVersion', '1.0.8.0'),
         StringStruct('InternalName', 'AttendanceStats'),
