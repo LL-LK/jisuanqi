@@ -128,116 +128,120 @@ def export(detail_path: str,
     if _same_path(detail_path, output_path):
         raise ValueError('输出路径不能与输入明细表相同，以免覆盖原始文件')
 
-    wb = load_workbook(detail_path)          # 保留公式与格式
+    with open(detail_path, 'rb') as f_detail:
+        wb = load_workbook(f_detail)          # 保留公式与格式
     result.output_path = output_path
 
-    # ---- 保真：把带缓存值的公式固化为数值 ----
-    # openpyxl 不写公式的缓存值，若直接保存，所有公式格在按值读取时会变成空，
-    # 既破坏原始数据，也让下游工具读到空值。这里用带缓存的值替换公式。
-    frozen = 0
-    sanitized = 0
-    if college_exempt is None:
-        wb_values = load_workbook(detail_path, data_only=True)
-        for name in (name for name in wb.sheetnames if name in ALLOWED_SHEETS[:2]):
-            ws_f = wb[name]
-            ws_v = wb_values[name]
-            for row in ws_f.iter_rows():
-                for cell in row:
-                    if cell.column in detail.protected_cols.get(name, ()):
-                        continue
-                    if cell.data_type == 'f':
-                        cached = ws_v.cell(cell.row, cell.column).value
-                        if cached is not None:
-                            cell.value = cached
-                            frozen += 1
-                    elif isinstance(cell.value, str):
-                        cleaned = strip_illegal(cell.value)
-                        if cleaned != cell.value:
-                            cell.value = cleaned
-                            sanitized += 1
-        wb_values.close()
-    result.formulas_frozen = frozen
-    result.strings_sanitized = sanitized
-
-    # ---- 清理多余工作表（只留三张原表） ----
-    for name in list(wb.sheetnames):
-        if name not in ALLOWED_SHEETS:
-            del wb[name]
-            result.removed_sheets.append(name)
-
-    avg_map = {(r.sheet, r.college, r.day): r for r in rates}
-
-    for sheet_name in list(wb.sheetnames):
-        if sheet_name not in ALLOWED_SHEETS or sheet_name.startswith('屏风'):
-            continue
-        ws = wb[sheet_name]
-        rate_cols = detail.rate_cols_by_sheet.get(sheet_name, {})
-        rate_label_row = detail.rate_label_rows.get(sheet_name)
-        if rate_label_row:
-            for label, column in rate_cols.items():
-                ws.cell(rate_label_row, column).value = '周平均' if label == '平均' else label
-
-        # ---- 1. 写教室级免勤人数 ----
-        for room in detail.rooms_of(sheet_name) if college_exempt is None else ():
-            for day, col in room.exempt_cols.items():
-                if col is None:
-                    continue
-                value = room_exempt.get((sheet_name, room.row, day), 0)
-                cell = ws.cell(room.row, col)
-                cell.value = int(value)
-                cell.number_format = '0'
-                cell.alignment = Alignment(horizontal='center')
-                if estimate_source(estimated_cells, (sheet_name, room.row, day)) == '估算':
-                    # 估算值标记：固定斜体 + 固定填充色（数字本身保持纯整数）
-                    # 判定来源唯一：core.calc.estimate_source（界面复用同一处）
-                    cell.font = ESTIMATE_FONT
-                    cell.fill = ESTIMATE_FILL
-                result.written_exempt_cells += 1
-
-        # ---- 2. 归一化出勤率区合并 + 写入出勤率 ----
-        blocks = detail.blocks_of(sheet_name)
-        written_colleges = set()
-        for block in blocks:
-            rows = block.rows if college_exempt is not None else block.merge_rows
-            if not rows:
-                continue
-            lo, hi = min(rows), max(rows)
-            if college_exempt is not None:
-                for day, column in detail.exempt_cols_by_sheet.get(sheet_name, {}).items():
-                    cell = _college_cell(ws, lo, hi, column, result)
-                    value = college_exempt.get((sheet_name, block.name, day))
-                    cell.value = value if block.name not in written_colleges else None
-                    cell.number_format = '0'
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                    result.written_exempt_cells += cell.value is not None
-                written_colleges.add(block.name)
-            for label, col in rate_cols.items():
-                if col is None:
-                    continue
-                rate_lo = max(lo, rate_label_row + 1) if rate_label_row else lo
-                if rate_lo > hi:
-                    continue
-                cell = _college_cell(ws, rate_lo, hi, col, result)
-                if label == '平均':
-                    value = average_rates.get((sheet_name, block.name))
-                else:
-                    rec = avg_map.get((sheet_name, block.name, label))
-                    value = rec.rate if rec else None
-                if value is None:
-                    cell.value = None
-                else:
-                    cell.value = float(value)
-                    cell.number_format = '0.00%'
-                    cell.alignment = Alignment(horizontal='center', vertical='center')
-                result.written_rate_cells += 1
-
-        # ---- 3. 列宽，避免 #### ----
-        for label, col in rate_cols.items():
-            if col:
-                letter = get_column_letter(col)
-                ws.column_dimensions[letter].width = RATE_WIDTH
-
     try:
+        # ---- 保真：把带缓存值的公式固化为数值 ----
+        # openpyxl 不写公式的缓存值，若直接保存，所有公式格在按值读取时会变成空，
+        # 既破坏原始数据，也让下游工具读到空值。这里用带缓存的值替换公式。
+        frozen = 0
+        sanitized = 0
+        if college_exempt is None:
+            with open(detail_path, 'rb') as f_values:
+                wb_values = load_workbook(f_values, data_only=True)
+            try:
+                for name in (name for name in wb.sheetnames if name in ALLOWED_SHEETS[:2]):
+                    ws_f = wb[name]
+                    ws_v = wb_values[name]
+                    for row in ws_f.iter_rows():
+                        for cell in row:
+                            if cell.column in detail.protected_cols.get(name, ()):
+                                continue
+                            if cell.data_type == 'f':
+                                cached = ws_v.cell(cell.row, cell.column).value
+                                if cached is not None:
+                                    cell.value = cached
+                                    frozen += 1
+                            elif isinstance(cell.value, str):
+                                cleaned = strip_illegal(cell.value)
+                                if cleaned != cell.value:
+                                    cell.value = cleaned
+                                    sanitized += 1
+            finally:
+                wb_values.close()
+        result.formulas_frozen = frozen
+        result.strings_sanitized = sanitized
+
+        # ---- 清理多余工作表（只留三张原表） ----
+        for name in list(wb.sheetnames):
+            if name not in ALLOWED_SHEETS:
+                del wb[name]
+                result.removed_sheets.append(name)
+
+        avg_map = {(r.sheet, r.college, r.day): r for r in rates}
+
+        for sheet_name in list(wb.sheetnames):
+            if sheet_name not in ALLOWED_SHEETS or sheet_name.startswith('屏风'):
+                continue
+            ws = wb[sheet_name]
+            rate_cols = detail.rate_cols_by_sheet.get(sheet_name, {})
+            rate_label_row = detail.rate_label_rows.get(sheet_name)
+            if rate_label_row:
+                for label, column in rate_cols.items():
+                    ws.cell(rate_label_row, column).value = '周平均' if label == '平均' else label
+
+            # ---- 1. 写教室级免勤人数 ----
+            for room in detail.rooms_of(sheet_name) if college_exempt is None else ():
+                for day, col in room.exempt_cols.items():
+                    if col is None:
+                        continue
+                    value = room_exempt.get((sheet_name, room.row, day), 0)
+                    cell = ws.cell(room.row, col)
+                    cell.value = int(value)
+                    cell.number_format = '0'
+                    cell.alignment = Alignment(horizontal='center')
+                    if estimate_source(estimated_cells, (sheet_name, room.row, day)) == '估算':
+                        # 估算值标记：固定斜体 + 固定填充色（数字本身保持纯整数）
+                        # 判定来源唯一：core.calc.estimate_source（界面复用同一处）
+                        cell.font = ESTIMATE_FONT
+                        cell.fill = ESTIMATE_FILL
+                    result.written_exempt_cells += 1
+
+            # ---- 2. 归一化出勤率区合并 + 写入出勤率 ----
+            blocks = detail.blocks_of(sheet_name)
+            written_colleges = set()
+            for block in blocks:
+                rows = block.rows if college_exempt is not None else block.merge_rows
+                if not rows:
+                    continue
+                lo, hi = min(rows), max(rows)
+                if college_exempt is not None:
+                    for day, column in detail.exempt_cols_by_sheet.get(sheet_name, {}).items():
+                        cell = _college_cell(ws, lo, hi, column, result)
+                        value = college_exempt.get((sheet_name, block.name, day))
+                        cell.value = value if block.name not in written_colleges else None
+                        cell.number_format = '0'
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                        result.written_exempt_cells += cell.value is not None
+                    written_colleges.add(block.name)
+                for label, col in rate_cols.items():
+                    if col is None:
+                        continue
+                    rate_lo = max(lo, rate_label_row + 1) if rate_label_row else lo
+                    if rate_lo > hi:
+                        continue
+                    cell = _college_cell(ws, rate_lo, hi, col, result)
+                    if label == '平均':
+                        value = average_rates.get((sheet_name, block.name))
+                    else:
+                        rec = avg_map.get((sheet_name, block.name, label))
+                        value = rec.rate if rec else None
+                    if value is None:
+                        cell.value = None
+                    else:
+                        cell.value = float(value)
+                        cell.number_format = '0.00%'
+                        cell.alignment = Alignment(horizontal='center', vertical='center')
+                    result.written_rate_cells += 1
+
+            # ---- 3. 列宽，避免 #### ----
+            for label, col in rate_cols.items():
+                if col:
+                    letter = get_column_letter(col)
+                    ws.column_dimensions[letter].width = RATE_WIDTH
+
         if append_report:
             append_report(wb)
         with atomic_output(output_path) as tmp_path:

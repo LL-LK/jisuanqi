@@ -35,7 +35,12 @@ def render_png_frames(bear_painter_cls, sizes: tuple[int, ...] = STANDARD_SIZES)
 
     frames: dict[int, bytes] = {}
     for size in sizes:
-        pixmap = bear_painter_cls.create_bear_avatar(size)
+        if hasattr(bear_painter_cls, "pixmap"):
+            pixmap = bear_painter_cls.pixmap(size)
+        elif hasattr(bear_painter_cls, "create_bear_avatar"):
+            pixmap = bear_painter_cls.create_bear_avatar(size)
+        else:
+            raise AttributeError(f"{bear_painter_cls} has neither pixmap nor create_bear_avatar")
         buffer = QBuffer()
         buffer.open(QIODevice.WriteOnly)
         success = pixmap.save(buffer, "PNG")
@@ -99,11 +104,14 @@ def generate_ico(output_path: str | None = None, force: bool = False) -> str:
         sys.path.insert(0, project_dir)
 
     try:
-        from app import BearPainter
-    except ImportError as exc:
-        raise ImportError(f"Could not import BearPainter from {project_dir}/app.py") from exc
+        from app import AttendanceIcon as icon_provider
+    except ImportError:
+        try:
+            from app import BearPainter as icon_provider
+        except ImportError as exc:
+            raise ImportError(f"Could not import AttendanceIcon or BearPainter from {project_dir}/app.py") from exc
 
-    frames = render_png_frames(BearPainter, STANDARD_SIZES)
+    frames = render_png_frames(icon_provider, STANDARD_SIZES)
     ico_bytes = assemble_ico(frames)
 
     os.makedirs(os.path.dirname(target_path), exist_ok=True)

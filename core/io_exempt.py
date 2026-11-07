@@ -148,82 +148,85 @@ def load_exemptions(path: str, source: str = '未分类',
     records: List[ExemptRecord] = []
     campus_map = getattr(dictionary, 'campus_alias', None) if dictionary else None
     class_map = getattr(dictionary, 'class_alias', None) if dictionary else None
-    wb = load_workbook(path, data_only=True)
-    recognized = False
-    for sheet_number, sheet_name in enumerate(wb.sheetnames, 1):
-        ws = wb[sheet_name]
-        header_row = _detect_header_row(ws)
-        cols = _detect_columns(ws, header_row)
-        if require_schema and not _has_exemption_headers(cols):
-            continue
-        recognized = True
-        sheet_session = parse_session(sheet_name)
+    with open(path, 'rb') as f:
+        wb = load_workbook(f, data_only=True)
+        try:
+            recognized = False
+            for sheet_number, sheet_name in enumerate(wb.sheetnames, 1):
+                ws = wb[sheet_name]
+                header_row = _detect_header_row(ws)
+                cols = _detect_columns(ws, header_row)
+                if require_schema and not _has_exemption_headers(cols):
+                    continue
+                recognized = True
+                sheet_session = parse_session(sheet_name)
 
-        for row in range(header_row + 1, ws.max_row + 1):
-            def cell(key):
-                idx = cols.get(key)
-                return ws.cell(row, idx).value if idx else None
+                for row in range(header_row + 1, ws.max_row + 1):
+                    def cell(key):
+                        idx = cols.get(key)
+                        return ws.cell(row, idx).value if idx else None
 
-            sid_raw, sid_ok, sid_kind = normalize_sid(cell('sid'))
-            name = normalize_text(cell('name'))
-            college = normalize_text(cell('college'))
-            class_text = normalize_text(cell('class'))
-            reason = normalize_text(cell('reason'))
-            week_text = normalize_text(cell('week'))
-            time_text = normalize_text(cell('time'))
-            campus = normalize_campus(cell('campus'), custom_map=campus_map)
-            session = parse_session(cell('session')) or sheet_session
-            room1 = normalize_room(cell('room'))
-            room2 = normalize_room(cell('room2'))
-            if session == '晚自习' and room2:
-                room = room2
-            else:
-                room = room1 or room2
+                    sid_raw, sid_ok, sid_kind = normalize_sid(cell('sid'))
+                    name = normalize_text(cell('name'))
+                    college = normalize_text(cell('college'))
+                    class_text = normalize_text(cell('class'))
+                    reason = normalize_text(cell('reason'))
+                    week_text = normalize_text(cell('week'))
+                    time_text = normalize_text(cell('time'))
+                    campus = normalize_campus(cell('campus'), custom_map=campus_map)
+                    session = parse_session(cell('session')) or sheet_session
+                    room1 = normalize_room(cell('room'))
+                    room2 = normalize_room(cell('room2'))
+                    if session == '晚自习' and room2:
+                        room = room2
+                    else:
+                        room = room1 or room2
 
-            if not any([sid_raw, name, college, class_text]):
-                continue
-            if not keep_unassigned and not college and not class_text:
-                continue
+                    if not any([sid_raw, name, college, class_text]):
+                        continue
+                    if not keep_unassigned and not college and not class_text:
+                        continue
 
-            group_size = extract_group_size(name) or extract_group_size(class_text)
-            # 没有「共N人」的集体申请不构成集体申请：它既不覆盖同班个人，
-            # 也不能按 1 人计——按「免勤不完整（待补人数）」挂起。
-            whole_term = bool(re.search(r'(?:全|本|整|一)学期', f'{week_text} {time_text}'))
-            weeks = parse_weeks(week_text, week_no=week_no)
-            weekdays = parse_weekdays(time_text)
-            pairs_set, _warns = resolve_pairs(week_text, time_text,
-                                              window_week=week_no if week_no is not None else 7)
-            if not weeks and pairs_set:
-                weeks = {w for (w, _d) in pairs_set}
-            if not weekdays and pairs_set:
-                weekdays = {d for (_w, d) in pairs_set}
+                    group_size = extract_group_size(name) or extract_group_size(class_text)
+                    # 没有「共N人」的集体申请不构成集体申请：它既不覆盖同班个人，
+                    # 也不能按 1 人计——按「免勤不完整（待补人数）」挂起。
+                    whole_term = bool(re.search(r'(?:全|本|整|一)学期', f'{week_text} {time_text}'))
+                    weeks = parse_weeks(week_text, week_no=week_no)
+                    weekdays = parse_weekdays(time_text)
+                    pairs_set, _warns = resolve_pairs(week_text, time_text,
+                                                      window_week=week_no if week_no is not None else 7)
+                    if not weeks and pairs_set:
+                        weeks = {w for (w, _d) in pairs_set}
+                    if not weekdays and pairs_set:
+                        weekdays = {d for (_w, d) in pairs_set}
 
-            records.append(ExemptRecord(
-                sid=sid_raw,
-                name=name,
-                college=college,
-                class_text=class_text,
-                class_key=normalize_class(class_text or name, custom_map=class_map),
-                weeks=weeks,
-                weekdays=weekdays,
-                session=session,
-                campus=campus,
-                room=room,
-                reason=reason,
-                group_size=group_size,
-                source=source,
-                row=row,
-                sid_ok=sid_ok,
-                sid_kind=sid_kind,
-                placeholder=is_placeholder_sid(sid_raw),
-                sid_padded='补零' in (sid_kind or ''),
-                whole_term=whole_term,
-                pairs=frozenset(pairs_set),
-                group_like=is_group_application(name, class_text),
-                source_ref=(f'免勤表{source_number} / 工作表{sheet_number} / 第{row}行'
-                            if source_number else ''),
-            ))
-    wb.close()
+                    records.append(ExemptRecord(
+                        sid=sid_raw,
+                        name=name,
+                        college=college,
+                        class_text=class_text,
+                        class_key=normalize_class(class_text or name, custom_map=class_map),
+                        weeks=weeks,
+                        weekdays=weekdays,
+                        session=session,
+                        campus=campus,
+                        room=room,
+                        reason=reason,
+                        group_size=group_size,
+                        source=source,
+                        row=row,
+                        sid_ok=sid_ok,
+                        sid_kind=sid_kind,
+                        placeholder=is_placeholder_sid(sid_raw),
+                        sid_padded='补零' in (sid_kind or ''),
+                        whole_term=whole_term,
+                        pairs=frozenset(pairs_set),
+                        group_like=is_group_application(name, class_text),
+                        source_ref=(f'免勤表{source_number} / 工作表{sheet_number} / 第{row}行'
+                                    if source_number else ''),
+                    ))
+        finally:
+            wb.close()
     if require_schema and not recognized:
         raise ValueError('找不到免勤申请表头，请检查学院、人员或班级以及免勤周次/时间列')
     return records

@@ -178,130 +178,133 @@ def _detect_data_cols(ws, header_row: int):
 def load_detail(path: str) -> DetailModel:
     """读取明细表。只解析雁山校区的工作表；屏风表原样保留、不参与任何计算。"""
     model = DetailModel(path=path)
-    wb = load_workbook(path, data_only=True)
-    model.sheet_names = list(wb.sheetnames)
+    with open(path, 'rb') as f:
+        wb = load_workbook(f, data_only=True)
+        try:
+            model.sheet_names = list(wb.sheetnames)
 
-    for sheet_name in wb.sheetnames:
-        ws = wb[sheet_name]
-        title_week = week_from_label(ws['A1'].value)
-        if title_week is not None:
-            model.title_weeks[sheet_name] = title_week
-        if not sheet_name.startswith('雁山'):
-            # 屏风校区：完全排除，只保留工作表本身
-            continue
-        header_row = _find_header_row(ws)
-        cols = _detect_data_cols(ws, header_row)
-        rate_cols, excluded_cols, inferred_row = _detect_rate_cols(ws, header_row, tuple(cols['actuals']))
-        model.rate_cols_by_sheet[sheet_name] = rate_cols
-        model.exempt_cols_by_sheet[sheet_name] = cols['exempts']
-        model.protected_cols[sheet_name] = {col for col in range(1, ws.max_column + 1)
-                                          if any(key in _effective_header(ws, header_row, col)
-                                                 for key in NON_RATE_HEADER_KEYS)}
-        if inferred_row:
-            model.rate_label_rows[sheet_name] = inferred_row
-        exempt_columns = set(cols['exempts'].values())
-        model.college_exempt_layout |= any(
-            r.min_col == r.max_col and r.min_col in exempt_columns
-            and r.min_row > header_row and r.max_row > r.min_row
-            for r in ws.merged_cells.ranges)
-        for col, head in excluded_cols:
-            model.warnings.append(
-                '工作表「%s」第 %s 列（%s）是非出勤率指标列，已排除在合并区重建范围外'
-                % (sheet_name, get_column_letter(col), head))
+            for sheet_name in wb.sheetnames:
+                ws = wb[sheet_name]
+                title_week = week_from_label(ws['A1'].value)
+                if title_week is not None:
+                    model.title_weeks[sheet_name] = title_week
+                if not sheet_name.startswith('雁山'):
+                    # 屏风校区：完全排除，只保留工作表本身
+                    continue
+                header_row = _find_header_row(ws)
+                cols = _detect_data_cols(ws, header_row)
+                rate_cols, excluded_cols, inferred_row = _detect_rate_cols(ws, header_row, tuple(cols['actuals']))
+                model.rate_cols_by_sheet[sheet_name] = rate_cols
+                model.exempt_cols_by_sheet[sheet_name] = cols['exempts']
+                model.protected_cols[sheet_name] = {col for col in range(1, ws.max_column + 1)
+                                                  if any(key in _effective_header(ws, header_row, col)
+                                                         for key in NON_RATE_HEADER_KEYS)}
+                if inferred_row:
+                    model.rate_label_rows[sheet_name] = inferred_row
+                exempt_columns = set(cols['exempts'].values())
+                model.college_exempt_layout |= any(
+                    r.min_col == r.max_col and r.min_col in exempt_columns
+                    and r.min_row > header_row and r.max_row > r.min_row
+                    for r in ws.merged_cells.ranges)
+                for col, head in excluded_cols:
+                    model.warnings.append(
+                        '工作表「%s」第 %s 列（%s）是非出勤率指标列，已排除在合并区重建范围外'
+                        % (sheet_name, get_column_letter(col), head))
 
-        if cols['college'] is None or cols['room'] is None:
-            model.warnings.append(f'工作表「{sheet_name}」缺少学院列或教室列，已跳过')
-            continue
+                if cols['college'] is None or cols['room'] is None:
+                    model.warnings.append(f'工作表「{sheet_name}」缺少学院列或教室列，已跳过')
+                    continue
 
-        # ---- 学院块：优先用学院列的合并区；未合并的单元格各算一块 ----
-        merged_rows = set()
-        blocks: List[CollegeBlock] = []
-        for rng in sorted(_merged_ranges_in_col(ws, cols['college']),
-                          key=lambda r: r.min_row):
-            if rng.max_row <= header_row:
-                continue
-            rows = list(range(rng.min_row, rng.max_row + 1))
-            merged_rows.update(rows)
-            raw = ws.cell(rng.min_row, rng.min_col).value
-            name, total = parse_college_label(raw)
-            blocks.append(CollegeBlock(sheet=sheet_name, name=name, total=total,
-                                       rows=rows, rate_cols=dict(rate_cols)))
-        for row in range(header_row + 1, ws.max_row + 1):
-            if row in merged_rows:
-                continue
-            raw = ws.cell(row, cols['college']).value
-            if not normalize_text(raw):
-                continue
-            name, total = parse_college_label(raw)
-            blocks.append(CollegeBlock(sheet=sheet_name, name=name, total=total,
-                                       rows=[row], rate_cols=dict(rate_cols)))
-        blocks.sort(key=lambda b: b.rows[0])
-        # 兼容未合并 B 列的连续多教室行：若某行有教室号但 B 列为空且不在合并区，
-        # 自动归入紧邻的上一学院块，防止丢失学院归属。
-        for row in range(header_row + 1, ws.max_row + 1):
-            if row in merged_rows:
-                continue
-            raw_col = ws.cell(row, cols['college']).value
-            if normalize_text(raw_col):
-                continue
-            room_val = strip_spaces(ws.cell(row, cols['room']).value)
-            if not room_val:
-                continue
-            for blk in reversed(blocks):
-                if blk.rows and blk.rows[-1] == row - 1:
-                    blk.rows.append(row)
-                    break
-        model.blocks.extend(blocks)
+                # ---- 学院块：优先用学院列的合并区；未合并的单元格各算一块 ----
+                merged_rows = set()
+                blocks: List[CollegeBlock] = []
+                for rng in sorted(_merged_ranges_in_col(ws, cols['college']),
+                                  key=lambda r: r.min_row):
+                    if rng.max_row <= header_row:
+                        continue
+                    rows = list(range(rng.min_row, rng.max_row + 1))
+                    merged_rows.update(rows)
+                    raw = ws.cell(rng.min_row, rng.min_col).value
+                    name, total = parse_college_label(raw)
+                    blocks.append(CollegeBlock(sheet=sheet_name, name=name, total=total,
+                                               rows=rows, rate_cols=dict(rate_cols)))
+                for row in range(header_row + 1, ws.max_row + 1):
+                    if row in merged_rows:
+                        continue
+                    raw = ws.cell(row, cols['college']).value
+                    if not normalize_text(raw):
+                        continue
+                    name, total = parse_college_label(raw)
+                    blocks.append(CollegeBlock(sheet=sheet_name, name=name, total=total,
+                                               rows=[row], rate_cols=dict(rate_cols)))
+                blocks.sort(key=lambda b: b.rows[0])
+                # 兼容未合并 B 列的连续多教室行：若某行有教室号但 B 列为空且不在合并区，
+                # 自动归入紧邻的上一学院块，防止丢失学院归属。
+                for row in range(header_row + 1, ws.max_row + 1):
+                    if row in merged_rows:
+                        continue
+                    raw_col = ws.cell(row, cols['college']).value
+                    if normalize_text(raw_col):
+                        continue
+                    room_val = strip_spaces(ws.cell(row, cols['room']).value)
+                    if not room_val:
+                        continue
+                    for blk in reversed(blocks):
+                        if blk.rows and blk.rows[-1] == row - 1:
+                            blk.rows.append(row)
+                            break
+                model.blocks.extend(blocks)
 
-        block_of_row = {}
-        for blk in blocks:
-            for r in blk.rows:
-                block_of_row[r] = blk
+                block_of_row = {}
+                for blk in blocks:
+                    for r in blk.rows:
+                        block_of_row[r] = blk
 
-        # ---- 教室行 ----
-        for row in range(header_row + 1, ws.max_row + 1):
-            room_raw = ws.cell(row, cols['room']).value
-            room = strip_spaces(room_raw)
-            blk = block_of_row.get(row)
-            college_label = normalize_text(
-                _merged_value(ws, cols['college'], row)) if cols['college'] else ''
-            name, total = parse_college_label(college_label)
-            if not name and blk:
-                name = blk.name
-                total = blk.total
-            if not room and not blk:
-                continue
-            if not room:
-                continue
-            actuals, actual_raw = {}, {}
-            for day, col in cols['actuals'].items():
-                raw = ws.cell(row, col).value
-                actual_raw[day] = '' if raw is None else str(raw).strip()
-                actuals[day] = parse_int(raw)
-            classes_text = normalize_text(
-                ws.cell(row, cols['classes']).value) if cols['classes'] else ''
-            model.rooms.append(RoomRow(
-                sheet=sheet_name,
-                row=row,
-                seq=parse_int(ws.cell(row, cols['seq']).value) if cols['seq'] else None,
-                college_name=name,
-                college_total=total if total is not None else (blk.total if blk else None),
-                room=room,
-                classes_text=classes_text,
-                expected=parse_int(ws.cell(row, cols['expected']).value) if cols['expected'] else None,
-                actuals=actuals,
-                actual_raw=actual_raw,
-                actual_cols=dict(cols['actuals']),
-                exempt_cols=dict(cols['exempts']),
-            ))
+                # ---- 教室行 ----
+                for row in range(header_row + 1, ws.max_row + 1):
+                    room_raw = ws.cell(row, cols['room']).value
+                    room = strip_spaces(room_raw)
+                    blk = block_of_row.get(row)
+                    college_label = normalize_text(
+                        _merged_value(ws, cols['college'], row)) if cols['college'] else ''
+                    name, total = parse_college_label(college_label)
+                    if not name and blk:
+                        name = blk.name
+                        total = blk.total
+                    if not room and not blk:
+                        continue
+                    if not room:
+                        continue
+                    actuals, actual_raw = {}, {}
+                    for day, col in cols['actuals'].items():
+                        raw = ws.cell(row, col).value
+                        actual_raw[day] = '' if raw is None else str(raw).strip()
+                        actuals[day] = parse_int(raw)
+                    classes_text = normalize_text(
+                        ws.cell(row, cols['classes']).value) if cols['classes'] else ''
+                    model.rooms.append(RoomRow(
+                        sheet=sheet_name,
+                        row=row,
+                        seq=parse_int(ws.cell(row, cols['seq']).value) if cols['seq'] else None,
+                        college_name=name,
+                        college_total=total if total is not None else (blk.total if blk else None),
+                        room=room,
+                        classes_text=classes_text,
+                        expected=parse_int(ws.cell(row, cols['expected']).value) if cols['expected'] else None,
+                        actuals=actuals,
+                        actual_raw=actual_raw,
+                        actual_cols=dict(cols['actuals']),
+                        exempt_cols=dict(cols['exempts']),
+                    ))
 
-        # ---- 块内教室数据行（R7 ①）----
-        # 教室行 = 含有效教室号且有应到数值的行；纯表头行剔除。
-        # 合并区起点 = 该学院首个教室数据行（第 3 行含 6504，必须在区内）。
-        for blk in blocks:
-            rows = [r.row for r in model.rooms
-                    if r.sheet == sheet_name and r.row in blk.rows
-                    and r.room and r.expected is not None]
-            blk.data_rows = sorted(rows)
-    wb.close()
+                # ---- 块内教室数据行（R7 ①）----
+                # 教室行 = 含有效教室号且有应到数值的行；纯表头行剔除。
+                # 合并区起点 = 该学院首个教室数据行（第 3 行含 6504，必须在区内）。
+                for blk in blocks:
+                    rows = [r.row for r in model.rooms
+                            if r.sheet == sheet_name and r.row in blk.rows
+                            and r.room and r.expected is not None]
+                    blk.data_rows = sorted(rows)
+        finally:
+            wb.close()
     return model

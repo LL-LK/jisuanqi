@@ -170,21 +170,24 @@ def load_tables(path: Optional[str]) -> Dict[str, List[List[str]]]:
     if not path or not os.path.exists(path):
         return tables
     try:
-        wb = load_workbook(path, data_only=True)
+        with open(path, 'rb') as f:
+            wb = load_workbook(f, data_only=True)
     except Exception:
         return tables
-    for name in SHEET_NAMES:
-        if name not in wb.sheetnames:
-            continue
-        ws = wb[name]
-        rows: List[List[str]] = []
-        for r in range(2, ws.max_row + 1):
-            values = [ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
-            if all(v is None or str(v).strip() == '' for v in values):
+    try:
+        for name in SHEET_NAMES:
+            if name not in wb.sheetnames:
                 continue
-            rows.append(['' if v is None else str(v).strip() for v in values])
-        tables[name] = rows
-    wb.close()
+            ws = wb[name]
+            rows: List[List[str]] = []
+            for r in range(2, ws.max_row + 1):
+                values = [ws.cell(r, c).value for c in range(1, ws.max_column + 1)]
+                if all(v is None or str(v).strip() == '' for v in values):
+                    continue
+                rows.append(['' if v is None else str(v).strip() for v in values])
+            tables[name] = rows
+    finally:
+        wb.close()
     return tables
 
 

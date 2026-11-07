@@ -20,21 +20,22 @@ import traceback
 from datetime import datetime
 from functools import lru_cache
 
-from PySide6.QtCore import (QAbstractTableModel, QModelIndex, QObject, QPointF,
-                            QRectF, QSettings, QThread, QTimer, QUrl, Qt, Signal)
-from PySide6.QtGui import (QBrush, QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QFont,
-                           QIcon, QKeySequence, QPainter, QPen,
+from PySide6.QtCore import (QAbstractTableModel, QEvent, QModelIndex, QObject, QPointF,
+                            QRectF, QSettings, QSize, QThread, QTimer, QUrl, Qt, Signal)
+from PySide6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QFont,
+                           QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
                            QPixmap, QShortcut)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
-                               QMessageBox, QPlainTextEdit, QProgressBar,
-                               QPushButton, QSizePolicy, QSpinBox,
-                               QSplitter, QTableView, QTabWidget, QVBoxLayout,
+                               QMenu, QMessageBox, QPlainTextEdit, QProgressBar,
+                               QPushButton, QSizePolicy, QSpinBox, QStackedWidget,
+                               QSplitter, QSystemTrayIcon, QTableView, QTabWidget, QVBoxLayout,
                                QWidget)
 
 from core import RunConfig, run, __version__ as APP_VERSION
 from core.calc import ESTIMATE_RGB          # R17 估算标记色（唯一事实源，界面禁另写一份）
+WARN_RGB = 'FFF6DC'                         # SL4 异常行警示色不变量
 from core.dictionary import Dictionary, load_tables, save_tables
 from core.exempt_report import COLLEGE_REPORT_COLUMNS, REPORT_COLUMNS, export_exempt_report
 from core.export import _same_path, atomic_output, check_output_path, unique_workbook_paths
@@ -63,19 +64,71 @@ PRIVACY_NOTICE = (
 )
 
 
+def get_animation_duration(default_ms: int) -> int:
+    """Return animation duration in milliseconds.
+
+    Fast-forwards to 0ms in offscreen/headless environments (pytest, CI)
+    to prevent test timeouts while preserving fluid desktop micro-interactions.
+    """
+    if os.environ.get("QT_QPA_PLATFORM") == "offscreen":
+        return 0
+    try:
+        if QGuiApplication.platformName() == "offscreen":
+            return 0
+    except Exception:
+        pass
+    return int(default_ms)
+
+
+def _format_file_size(size_bytes: int | float) -> str:
+    """Format byte size into human readable string (e.g. 245.8 KB)."""
+    try:
+        size = float(size_bytes)
+        if size < 1024:
+            return f'{int(size)} B'
+        elif size < 1024 * 1024:
+            return f'{size / 1024.0:.1f} KB'
+        else:
+            return f'{size / (1024.0 * 1024.0):.1f} MB'
+    except Exception:
+        return ''
+
+
 class AttendanceIcon:
+    """High-DPI retina sharpness asset provider with fallback vector engine."""
+
     @staticmethod
-    @lru_cache(maxsize=8)
-    def pixmap(size=48):
+    def pixmap(size=48, target_widget=None):
+        if isinstance(target_widget, (int, float)):
+            dpr = float(target_widget)
+        elif target_widget is not None and hasattr(target_widget, 'devicePixelRatio'):
+            try:
+                dpr = float(target_widget.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        else:
+            screen = QGuiApplication.primaryScreen()
+            dpr = float(screen.devicePixelRatio()) if screen else 1.0
+        if dpr <= 0:
+            dpr = 1.0
+        return AttendanceIcon._render_cached(int(size), float(dpr))
+
+    @staticmethod
+    @lru_cache(maxsize=32)
+    def _render_cached(size: int, dpr: float) -> QPixmap:
+        phys_size = max(1, int(round(size * dpr)))
         image_path = os.path.join(getattr(sys, '_MEIPASS', PROJECT_DIR), 'assets', 'strawberry-bear.png')
         artwork = QPixmap(image_path)
         if not artwork.isNull():
-            return artwork.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        icon = QPixmap(size, size)
+            scaled = artwork.scaled(phys_size, phys_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled.setDevicePixelRatio(dpr)
+            return scaled
+        icon = QPixmap(phys_size, phys_size)
         icon.fill(Qt.transparent)
         painter = QPainter(icon)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.scale(size / 48, size / 48)
+        scale_factor = phys_size / 48.0
+        painter.scale(scale_factor, scale_factor)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor('#F8E7EC'))
         painter.drawRoundedRect(QRectF(1, 1, 46, 46), 10, 10)
@@ -91,36 +144,207 @@ class AttendanceIcon:
         painter.drawLine(QPointF(18, 29), QPointF(22, 33))
         painter.drawLine(QPointF(22, 33), QPointF(30, 26))
         painter.end()
+        icon.setDevicePixelRatio(dpr)
         return icon
 
+    @staticmethod
+    def icon(size=48, target_widget=None) -> QIcon:
+        ico = QIcon()
+        for s in (16, 24, 32, 48, 64, 128, 256):
+            ico.addPixmap(AttendanceIcon.pixmap(s, target_widget=target_widget))
+        return ico
+
+    # Backward compatibility for icon generators and legacy tools
+    create_bear_avatar = pixmap
+
+
+AttendanceIcon.pixmap.cache_clear = AttendanceIcon._render_cached.cache_clear
+AttendanceIcon.pixmap.cache_info = AttendanceIcon._render_cached.cache_info
+AttendanceIcon.create_bear_avatar.cache_clear = AttendanceIcon._render_cached.cache_clear
+AttendanceIcon.create_bear_avatar.cache_info = AttendanceIcon._render_cached.cache_info
+
+# Backward compatibility aliases
+BearPainter = AttendanceIcon
+
+
+class ActionIcon:
+    """Multi-resolution vector action icon provider for QPushButton and UI actions."""
+
+    _CACHE: dict[tuple[str, str], QIcon] = {}
+
+    @classmethod
+    def get(cls, kind: str, color: str = '#781236') -> QIcon:
+        key = (kind, color.lower())
+        if key in cls._CACHE:
+            return cls._CACHE[key]
+        ico = QIcon()
+        for size in (16, 20, 24, 32, 48):
+            px = cls._render_pixmap(kind, size, color)
+            ico.addPixmap(px)
+        cls._CACHE[key] = ico
+        return ico
+
+    @staticmethod
+    def _render_pixmap(kind: str, size: int, color_hex: str) -> QPixmap:
+        px = QPixmap(size, size)
+        px.fill(Qt.transparent)
+        p = QPainter(px)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.scale(size / 24.0, size / 24.0)
+        color = QColor(color_hex)
+        pen = QPen(color, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+
+        if kind in ('document', 'file', 'table'):
+            path = QPainterPath()
+            path.moveTo(5, 3)
+            path.lineTo(14, 3)
+            path.lineTo(19, 8)
+            path.lineTo(19, 21)
+            path.lineTo(5, 21)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.drawLine(QPointF(14, 3), QPointF(14, 8))
+            p.drawLine(QPointF(14, 8), QPointF(19, 8))
+            p.drawLine(QPointF(8, 12), QPointF(16, 12))
+            p.drawLine(QPointF(8, 16), QPointF(13, 16))
+        elif kind in ('play', 'compute', 'sparkle'):
+            path = QPainterPath()
+            path.moveTo(8, 5)
+            path.lineTo(18, 12)
+            path.lineTo(8, 19)
+            path.closeSubpath()
+            p.setBrush(QBrush(color))
+            p.drawPath(path)
+        elif kind in ('export', 'save', 'save_as'):
+            p.drawLine(QPointF(4, 16), QPointF(4, 20))
+            p.drawLine(QPointF(4, 20), QPointF(20, 20))
+            p.drawLine(QPointF(20, 20), QPointF(20, 16))
+            p.drawLine(QPointF(12, 4), QPointF(12, 15))
+            p.drawLine(QPointF(8, 11), QPointF(12, 15))
+            p.drawLine(QPointF(16, 11), QPointF(12, 15))
+        elif kind in ('folder', 'folder_open', 'dir'):
+            p.drawLine(QPointF(3, 7), QPointF(8, 7))
+            p.drawLine(QPointF(10, 9), QPointF(21, 9))
+            p.drawLine(QPointF(3, 7), QPointF(3, 19))
+            p.drawLine(QPointF(3, 19), QPointF(19, 19))
+            p.drawLine(QPointF(21, 9), QPointF(21, 19))
+            flap = QPainterPath()
+            flap.moveTo(2, 19)
+            flap.lineTo(5, 12)
+            flap.lineTo(22, 12)
+            flap.lineTo(19, 19)
+            flap.closeSubpath()
+            p.drawPath(flap)
+        elif kind in ('tools', 'settings', 'gear'):
+            p.drawEllipse(QRectF(6.5, 6.5, 11, 11))
+            p.drawEllipse(QRectF(9.5, 9.5, 5, 5))
+            for angle in range(0, 360, 60):
+                p.save()
+                p.translate(12, 12)
+                p.rotate(angle)
+                p.drawLine(QPointF(0, -5.5), QPointF(0, -9))
+                p.restore()
+        elif kind in ('search', 'magnifier'):
+            p.drawEllipse(QRectF(4, 4, 11, 11))
+            p.drawLine(QPointF(12.5, 12.5), QPointF(19.5, 19.5))
+        elif kind in ('save_disk', 'disk'):
+            path = QPainterPath()
+            path.moveTo(4, 4)
+            path.lineTo(17, 4)
+            path.lineTo(20, 7)
+            path.lineTo(20, 20)
+            path.lineTo(4, 20)
+            path.closeSubpath()
+            p.drawPath(path)
+            p.drawRect(QRectF(7, 4, 10, 6))
+            p.drawRect(QRectF(6, 13, 12, 7))
+        elif kind in ('refresh', 'reset'):
+            p.drawArc(QRectF(5, 5, 14, 14), 45 * 16, 270 * 16)
+            p.drawLine(QPointF(15, 4), QPointF(19, 6))
+            p.drawLine(QPointF(17, 10), QPointF(19, 6))
+        elif kind in ('loading', 'spinner'):
+            for i in range(8):
+                angle = i * 45
+                p.save()
+                p.translate(12, 12)
+                p.rotate(angle)
+                dot_color = QColor(color)
+                dot_color.setAlphaF(max(0.18, (i + 1) / 8.0))
+                p.setPen(QPen(dot_color, 2.2, Qt.SolidLine, Qt.RoundCap))
+                p.drawLine(QPointF(0, -6), QPointF(0, -9))
+                p.restore()
+        p.end()
+        return px
+
+
+# ----------------------------------------------------------------- 设计令牌 (Design Tokens)
+TOKENS = {
+    'colors': {
+        'bg': '#FBF7F3',
+        'surface': '#FFFCFA',
+        'card': '#FFFCFA',
+        'border': '#E2D2CF',
+        'border_subtle': '#EBDAD6',
+        'border_strong': '#C7ADAF',
+        'divider': '#EBDAD6',
+        'header_bg': '#F2DFE1',
+        'text': '#442332',
+        'text_strong': '#391525',
+        'muted': '#70515C',
+        'slate': '#795F68',
+        'primary': '#961B48',
+        'primary_dark': '#781236',
+        'primary_light': '#F8E7EC',
+        'primary_hover': '#82153C',
+        'primary_container': '#FFEBF0',
+        'green_fg': '#146F64',
+        'danger': '#B33C48',
+        'warn_bg': '#' + WARN_RGB,  # '#FFF6DC'
+        'warn_fg': '#8D580D',
+        'low_bg': '#FFEAEA',
+        'low_fg': '#A82A3F',
+        'info': '#77505C',
+        'info_bg': '#F8EEF0',
+        'info_fg': '#693C4C',
+        'estimate_bg': '#' + ESTIMATE_RGB,  # '#FFFFF3CD' - 业务不变量锁定
+        'estimate_fg': '#8D580D',
+        'trace_bg': '#F1EBE8',
+    },
+    'spacing': {
+        'xs': 4,
+        'sm': 8,
+        'md': 12,
+        'lg': 16,
+        'xl': 24,
+        'xxl': 32,
+    },
+    'radii': {
+        'sm': '4px',
+        'md': '8px',
+        'lg': '12px',
+        'pill': '9999px',
+    },
+    'typography': {
+        'family': 'Microsoft YaHei UI, Microsoft YaHei, 微软雅黑, Segoe UI, sans-serif',
+        'mono_family': 'Consolas, Microsoft YaHei Mono, SimSun, monospace',
+        'size_display': '28px',
+        'size_title': '18px',
+        'size_body': '13px',
+        'size_caption': '12px',
+    },
+    'elevation': {
+        'card_rest': 'border: 1px solid #E2D2CF',
+        'card_hover': 'border: 1px solid #961B48',
+        'dialog': 'border: 1px solid #E2D2CF',
+    },
+}
 
 COLORS = {
-    'bg': '#FBF7F3',
-    'card': '#FFFCFA',
-    'border': '#DDC6C4',
+    **TOKENS['colors'],
     'control': '#C7ADAF',
-    'divider': '#EBDAD6',
-    'header_bg': '#F2DFE1',
-    'text': '#442332',
-    'text_strong': '#391525',
-    'muted': '#70515C',
-    'primary': '#961B48',
-    'primary_dark': '#781236',
-    'primary_light': '#F8E7EC',
-    'info': '#77505C',
-    'danger': '#B33C48',
-    'warn_bg': '#FFF6DC',
-    'warn_fg': '#8D580D',
-    'info_bg': '#F8EEF0',
-    'info_fg': '#693C4C',
-    'low_bg': '#FFEAEA',
-    'low_fg': '#A82A3F',
-    'slate': '#795F68',
-    'green_fg': '#146F64',
     'muted_fg': '#70515C',
-    'estimate_bg': '#' + ESTIMATE_RGB,
-    'estimate_fg': '#8D580D',
-    'trace_bg': '#F1EBE8',
 }
 
 APP_QSS = """
@@ -128,25 +352,29 @@ QWidget { background:%(bg)s; color:%(text)s; font-size:13px; }
 QMainWindow, QDialog { background:%(bg)s; }
 QLabel { background:transparent; }
 QCheckBox { background:transparent; }
-QToolTip { background:#442332; color:#FFFFFF; border:none; border-radius:6px; padding:5px 9px; }
+QToolTip { background:#442332; color:#FFFFFF; border:none; border-radius:6px; padding:6px 10px; font-size:12px; }
 
-/* ---------- 三槽流水线 ---------- */
+/* ---------- 三槽流水线与卡片容器 ---------- */
 QFrame#dropSlot, QFrame#settingsPanel, QFrame#metricCard {
     background:%(card)s; border:1px solid %(border)s; border-radius:10px; }
 QFrame#dropSlot { border-color:#C78E9C; }
 QFrame#dropSlot[dragOver="true"] { background:%(primary_light)s; border:2px solid %(primary)s; }
+QFrame#dropSlot[dragOver="true"] QLabel#slotPath { color:%(primary)s; font-weight:bold; }
 QFrame#dropSlot[dragReject="true"] { background:#FFF2F2; border:2px solid #FFAAA6; }
+QFrame#dropSlot[dragReject="true"] QLabel#slotPath { color:%(danger)s; font-weight:bold; }
 QLabel#slotBadge { color:#FFFFFF; font-weight:bold; border-radius:8px; padding:3px 11px;
                    background:%(primary)s; }
 QLabel#slotTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
 QLabel#slotPath { color:%(muted)s; background:#FFFFFF; border:1px solid %(border)s;
-                  border-radius:6px; padding:3px 8px; }
-QFrame#dropSlot[ready="true"] QLabel#slotPath { color:%(green_fg)s; }
+                  border-radius:6px; padding:4px 9px; }
+QFrame#dropSlot[ready="true"] QLabel#slotPath { color:%(green_fg)s; font-weight:600; }
+QFrame#dropSlot[celebration="true"] { border:1.5px solid %(green_fg)s; background:#F2FAF8; }
 QFrame#brandDivider { background:#C78E9C; }
 QLabel#workspaceTitle { font-size:30px; font-weight:bold; color:%(text_strong)s; }
 QLabel#sectionTitle { font-size:18px; font-weight:bold; color:%(text_strong)s; }
 QLabel#settingLabel { font-weight:600; color:%(text_strong)s; }
-QFrame#metricCard { background:%(bg)s; }
+QFrame#metricCard { background:%(bg)s; border:1px solid %(border)s; border-radius:10px; }
+QFrame#metricCard:hover { border:1px solid %(primary)s; background:#FFF9F7; }
 QLabel#metricLabel { color:%(text)s; font-size:13px; font-weight:600; }
 QLabel#metricValue { font-size:26px; font-weight:bold; color:%(text_strong)s; }
 QLabel#localBadge { background:#E9F4ED; color:%(green_fg)s; border-radius:8px;
@@ -155,15 +383,16 @@ QWidget#reportTools, QTabWidget QWidget#contentPage { background:%(card)s; }
 
 /* ---------- 按钮 ---------- */
 QPushButton { background:%(card)s; color:%(text)s; border:1px solid %(control)s;
-              border-radius:8px; padding:6px 14px; min-height:20px; font-weight:500; }
+              border-radius:8px; padding:6px 14px; min-height:22px; font-weight:500; }
 QPushButton:hover { border-color:%(primary)s; color:%(primary_dark)s; background:#F9EDF0; }
 QPushButton:pressed { background:#F4DFE5; border-color:%(primary_dark)s; }
-QPushButton:focus { border-color:%(primary)s; }
+QPushButton:focus { border:1.5px solid %(primary)s; }
 QPushButton:disabled { color:#7F696E; background:#F4EDE9; border-color:#EADCD8; }
 QPushButton#primaryButton { background:%(primary)s; color:#FFFFFF; border:2px solid %(primary)s;
                             border-radius:8px; font-weight:bold; font-size:14px; padding:6px 14px;
-                            min-height:22px; }
-QPushButton#primaryButton:hover, QPushButton#primaryButton:pressed { background:%(primary_dark)s; }
+                            min-height:24px; }
+QPushButton#primaryButton:hover { background:%(primary_hover)s; border-color:%(primary_hover)s; }
+QPushButton#primaryButton:pressed { background:%(primary_dark)s; border-color:%(primary_dark)s; }
 QPushButton#primaryButton:focus { border-color:#5F102D; }
 QPushButton#primaryButton:disabled { background:#F3E7E5; color:#7A6069; border-color:#F3E7E5; }
 QPushButton#privacyLink { background:transparent; color:%(primary)s; border:1px solid transparent; }
@@ -174,19 +403,19 @@ QPushButton#privacyLink:hover, QPushButton#privacyLink:focus {
 QLineEdit, QComboBox, QSpinBox { background:%(card)s; color:%(text)s;
     border:1px solid %(control)s; border-radius:8px; padding:6px 10px; min-height:20px;
     selection-background-color:#EBC5D1; selection-color:%(text_strong)s; }
-QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border-color:%(primary)s; background:#FFFCFA; }
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border:2px solid %(primary)s; background:#FFFCFA; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
     color:#7F696E; background:#F4EDE9; border-color:#EADCD8; }
 QLineEdit::placeholder { color:#7A6069; }
 QComboBox QAbstractItemView { background:%(card)s; border:1.5px solid %(control)s;
-    selection-background-color:#F8E7EC; selection-color:%(text)s; outline:none; border-radius:6px; }
+    selection-background-color:%(primary_light)s; selection-color:%(text)s; outline:none; border-radius:6px; }
 
 /* ---------- 表格 ---------- */
 QTableView { background:%(card)s; alternate-background-color:#FAF2EE;
              border:1px solid %(border)s; border-radius:10px; gridline-color:%(divider)s;
-             selection-background-color:#F1D6DF; selection-color:#391525; }
+             selection-background-color:%(primary_light)s; selection-color:#391525; }
 QTableView::item { padding:5px 8px; border:none; }
-QTableView::item:selected { background:#F1D6DF; color:#391525; }
+QTableView::item:selected { background:%(primary_light)s; color:#391525; }
 QHeaderView { background:%(card)s; }
 QHeaderView::section { background:%(header_bg)s; color:%(text_strong)s; padding:7px 10px;
                        border:none; border-right:1px solid %(divider)s;
@@ -195,7 +424,7 @@ QHeaderView::section:hover { background:#F4DFE5; }
 
 /* ---------- 页签 ---------- */
 QTabWidget::pane { background:%(card)s; border:1px solid %(border)s; border-radius:10px; top:-1px; }
-QTabBar::tab { background:transparent; color:%(muted)s; padding:8px 11px;
+QTabBar::tab { background:transparent; color:%(muted)s; padding:8px 12px;
                margin-right:2px; border-top-left-radius:8px; border-top-right-radius:8px;
                border-bottom:2.5px solid transparent; font-weight:500; }
 QTabBar::tab:hover { color:%(primary_dark)s; background:#F9EDF0; }
@@ -206,7 +435,7 @@ QTabWidget#workspaceTabs > QTabBar::tab { border:0; border-radius:7px; margin:0 
                                        padding:8px 18px; }
 QTabWidget#workspaceTabs > QTabBar::tab:selected { background:%(primary)s; color:#FFFFFF; }
 
-/* ---------- 文本域（概览 / 自测输出；等宽字体在 Python 侧设置） ---------- */
+/* ---------- 文本域（概览 / 自测输出） ---------- */
 QPlainTextEdit { background:%(card)s; color:%(text)s; border:1.5px solid %(border)s;
                  border-radius:10px; padding:10px; }
 
@@ -238,8 +467,68 @@ QLabel#statusBar { color:%(text_strong)s; background:%(card)s; border:1px solid 
                    border-left:3px solid %(primary)s; border-radius:8px; padding:6px 11px; font-weight:500; }
 QLabel#statusBar[state="warn"] { border-left:4px solid %(warn_fg)s; color:%(warn_fg)s; background:#FFFDF7; }
 QLabel#statusBar[state="error"] { border-left:4px solid %(danger)s; color:%(danger)s; background:#FFF8F8; }
+QLabel#statusBar[state="success"] { border-left:4px solid %(green_fg)s; color:%(green_fg)s; background:#F4FAF8; }
 
 QStatusBar { background:%(card)s; color:%(text_strong)s; border-top:1px solid %(divider)s; }
+
+/* ---------- 集中式对话框规则（替代散落内联 setStyleSheet） ---------- */
+QDialog#statusDialog { background:#F9EDF0; }
+QDialog#statusDialog QLabel#dialogTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
+QDialog#statusDialog QLabel#dialogMessage { font-size:13px; color:%(text)s; }
+QFrame#adviceCard { background:#FBF3EF; border:1px dashed #D9BFC0; border-radius:10px; padding:10px 12px; }
+QLabel#adviceTitle { font-weight:bold; color:%(primary_dark)s; font-size:12px; }
+QLabel#adviceText { font-size:12px; color:%(text)s; }
+QPushButton#toggleBtn { background:transparent; border:none; color:%(muted)s; font-size:12px; font-weight:500; padding:4px 6px; text-align:left; }
+QPushButton#toggleBtn:hover { color:%(primary)s; }
+QPushButton#copyBtn { background:%(card)s; border:1px solid %(control)s; border-radius:6px; color:%(text)s; font-size:11px; padding:3px 8px; }
+QPushButton#copyBtn:hover { border-color:%(primary)s; color:%(primary_dark)s; }
+QPlainTextEdit#techDetailBox { background:#F4EDE9; color:%(text)s; border:1px solid #E6D6D2; border-radius:8px; padding:8px; font-size:11px; }
+
+QFrame#drilldownCard { background:%(primary_light)s; border:1px solid #EBC5D1; border-radius:10px; padding:10px 14px; }
+QLabel#drilldownCountLabel { font-size:13px; color:%(text)s; }
+QLabel#drilldownFilterLabel { font-weight:bold; color:%(text)s; }
+QPushButton#drilldownExportBtn { background:%(primary)s; color:#FFFFFF; font-weight:bold; border-radius:6px; padding:6px 14px; }
+QPushButton#drilldownExportBtn:hover { background:%(primary_dark)s; }
+
+/* ---------- 空状态体验 (F7) ---------- */
+QFrame#emptyStateCard { background:%(card)s; border:1.5px solid %(border)s; border-radius:12px; }
+QFrame#emptyStepCard { background:%(bg)s; border:1px solid %(border_subtle)s; border-radius:8px; }
+QFrame#emptyStepCard:hover { background:%(primary_light)s; border-color:%(control)s; }
+QLabel#emptyStepBadge { background:%(primary)s; color:#FFFFFF; font-weight:bold; font-size:13px;
+                        border-radius:12px; min-width:24px; max-width:24px; min-height:24px; max-height:24px;
+                        qproperty-alignment:AlignCenter; }
+QLabel#emptyStepTitle { font-weight:bold; color:%(text_strong)s; font-size:13px; }
+QLabel#emptyStepDesc { color:%(muted)s; font-size:12px; }
+QLabel#emptyWelcomeTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
+QLabel#emptyWelcomeSubtitle { font-size:13px; color:%(muted)s; }
+QLabel#emptyTipText { font-size:12px; color:%(slate)s; background:%(surface)s;
+                      border:1px dashed %(border)s; border-radius:6px; padding:8px 12px; }
+
+/* ---------- 浮动轻量通知 (F11) ---------- */
+QFrame#toastNotification {
+    background:#391525;
+    border:1px solid #781236;
+    border-radius:18px;
+    color:#FFFFFF;
+}
+QFrame#toastNotification[kind="success"] {
+    background:#144E45;
+    border:1px solid %(green_fg)s;
+}
+QFrame#toastNotification[kind="warn"], QFrame#toastNotification[kind="warning"] {
+    background:#5D3708;
+    border:1px solid %(warn_fg)s;
+}
+QLabel#toastIcon {
+    font-size:14px;
+    font-weight:bold;
+    color:#FFFFFF;
+}
+QLabel#toastMessage {
+    font-size:13px;
+    font-weight:500;
+    color:#FFFFFF;
+}
 """ % COLORS
 
 
@@ -391,16 +680,17 @@ class _GenericTableModel(QAbstractTableModel):
 
 # ----------------------------------------------------------------- 后台任务
 
-class Worker(QObject):
+class Worker(QThread):
     finished = Signal(object)
     failed = Signal(str)
 
-    def __init__(self, config: RunConfig):
-        super().__init__()
+    def __init__(self, config: RunConfig = None, parent=None):
+        super().__init__(parent)
         self.config = config
 
     def run(self):
         try:
+            QThread.setTerminationEnabled(True)
             result = run(self.config)
             self.finished.emit(result)
         except Exception:                              # noqa: BLE001
@@ -432,75 +722,115 @@ class PathPreview(QLabel):
         self.set_path(self.toolTip())
 
 
+class ToastNotification(QFrame):
+    """Modern non-blocking floating toast notification pill."""
+
+    def __init__(self, parent=None, message: str = '', kind: str = 'info', duration: int = 3000):
+        top_parent = parent.window() if parent and hasattr(parent, 'window') else parent
+        super().__init__(top_parent)
+        self.setObjectName('toastNotification')
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setProperty('kind', kind)
+        self._message = message
+        self._kind = kind
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 9, 18, 9)
+        layout.setSpacing(10)
+
+        icon_symbol = '✓' if kind == 'success' else ('⚠' if kind in ('warn', 'warning') else 'ℹ')
+        self.icon_label = QLabel(icon_symbol)
+        self.icon_label.setObjectName('toastIcon')
+        layout.addWidget(self.icon_label)
+
+        self.msg_label = QLabel(message)
+        self.msg_label.setObjectName('toastMessage')
+        layout.addWidget(self.msg_label)
+
+        self.adjustSize()
+        if top_parent:
+            parent_w = top_parent.width()
+            toast_w = self.sizeHint().width()
+            x = max(10, (parent_w - toast_w) // 2)
+            self.move(x, 20)
+
+        if top_parent and hasattr(top_parent, '_active_toasts') and isinstance(top_parent._active_toasts, set):
+            top_parent._active_toasts.add(self)
+            self.destroyed.connect(lambda: top_parent._active_toasts.discard(self) if hasattr(top_parent, '_active_toasts') else None)
+
+        eff_duration = get_animation_duration(duration)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.close)
+        self._timer.start(eff_duration)
+
+        super().show()
+        super().raise_()
+
+    def show(self, *args, **kwargs):
+        if not args and not kwargs:
+            super().show()
+            super().raise_()
+        else:
+            return ToastNotification(self, *args, **kwargs)
+
+    def closeEvent(self, event):
+        if hasattr(self, '_timer') and self._timer.isActive():
+            self._timer.stop()
+        self.deleteLater()
+        super().closeEvent(event)
+
+
+class MetricCard(QFrame):
+    """Clickable, interactive metric card with hover elevation and jump navigation."""
+
+    clicked = Signal(str)
+
+    def __init__(self, title: str, parent=None):
+        super().__init__(parent)
+        self.setObjectName('metricCard')
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFrameShape(QFrame.StyledPanel)
+        self._title = title
+
+        content = QVBoxLayout(self)
+        content.setContentsMargins(14, 10, 14, 10)
+        content.setSpacing(2)
+
+        self.label = QLabel(title)
+        self.label.setObjectName('metricLabel')
+        self.label.setCursor(Qt.PointingHandCursor)
+        content.addWidget(self.label)
+
+        self.value = QLabel('—')
+        self.value.setObjectName('metricValue')
+        self.value.setAccessibleName(title)
+        self.value.setCursor(Qt.PointingHandCursor)
+        content.addWidget(self.value)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            top_win = self.window()
+            if hasattr(top_win, '_on_metric_card_clicked'):
+                top_win._on_metric_card_clicked(self._title)
+            self.clicked.emit(self._title)
+        super().mousePressEvent(event)
+
+
 class StatusDialog(QDialog):
     """带可折叠技术详情的提示窗口。"""
 
     def __init__(self, parent=None, title='提示', message='', advice='',
                  technical_detail=None, kind='info'):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(title)
-        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32)))
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32, target_widget=self)))
         self.setMinimumWidth(500)
         self.setMaximumWidth(680)
         self.setModal(True)
-        self.setStyleSheet("""
-            QDialog {
-                background: #F9EDF0;
-            }
-            QLabel#dialogTitle {
-                font-size: 16px;
-                font-weight: bold;
-                color: #391525;
-            }
-            QLabel#dialogMessage {
-                font-size: 13px;
-                color: #442332;
-                line-height: 1.4;
-            }
-            QFrame#adviceCard {
-                background: #FBF3EF;
-                border: 1px dashed #D9BFC0;
-                border-radius: 10px;
-                padding: 10px 12px;
-            }
-            QLabel#adviceText {
-                font-size: 12px;
-                color: #442332;
-                line-height: 1.35;
-            }
-            QPushButton#toggleBtn {
-                background: transparent;
-                border: none;
-                color: #70515C;
-                font-size: 12px;
-                font-weight: 500;
-                padding: 4px 6px;
-                text-align: left;
-            }
-            QPushButton#toggleBtn:hover {
-                color: #961B48;
-            }
-            QPushButton#copyBtn {
-                background: #FFFCFA;
-                border: 1px solid #C7ADAF;
-                border-radius: 6px;
-                color: #442332;
-                font-size: 11px;
-                padding: 3px 8px;
-            }
-            QPushButton#copyBtn:hover {
-                border-color: #961B48;
-                color: #781236;
-            }
-            QPlainTextEdit#techDetailBox {
-                background: #F4EDE9;
-                color: #442332;
-                border: 1px solid #E6D6D2;
-                border-radius: 8px;
-                padding: 8px;
-                font-size: 11px;
-            }
-        """)
+        self.setObjectName('statusDialog')
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 18)
@@ -512,7 +842,7 @@ class StatusDialog(QDialog):
         top_row.setAlignment(Qt.AlignTop)
 
         avatar = QLabel()
-        avatar.setPixmap(AttendanceIcon.pixmap(54))
+        avatar.setPixmap(AttendanceIcon.pixmap(54, target_widget=self))
         avatar.setFixedSize(54, 54)
         top_row.addWidget(avatar)
 
@@ -539,7 +869,7 @@ class StatusDialog(QDialog):
             adv_layout.setContentsMargins(10, 8, 10, 8)
             adv_layout.setSpacing(4)
             adv_title = QLabel('处理建议')
-            adv_title.setStyleSheet('font-weight: bold; color: #781236; font-size: 12px;')
+            adv_title.setObjectName('adviceTitle')
             adv_layout.addWidget(adv_title)
             adv_text = QLabel(advice)
             adv_text.setTextFormat(Qt.PlainText)
@@ -609,24 +939,66 @@ class StatusDialog(QDialog):
             QApplication.clipboard().setText(str(self.technical_detail))
             if self.copy_btn:
                 self.copy_btn.setText('已复制')
+            top_parent = self.parent() or self
+            ToastNotification(top_parent, '诊断日志已成功复制到剪贴板', kind='success')
+
+    def _cleanup_dialog(self):
+        self.setParent(None)
+        self.deleteLater()
+
+    def closeEvent(self, event):
+        self._cleanup_dialog()
+        super().closeEvent(event)
+
+    def accept(self):
+        self._cleanup_dialog()
+        super().accept()
+
+    def reject(self):
+        self._cleanup_dialog()
+        super().reject()
 
     @classmethod
     def show_warning(cls, parent, title, message, advice='', technical_detail=None, kind='warn'):
         dlg = cls(parent, title=title, message=message, advice=advice,
                   technical_detail=technical_detail, kind=kind)
-        return dlg.exec()
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        try:
+            return dlg.exec()
+        finally:
+            try:
+                dlg.setParent(None)
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
 
     @classmethod
     def show_error(cls, parent, title, message, advice='', technical_detail=None, kind='error'):
         dlg = cls(parent, title=title, message=message, advice=advice,
                   technical_detail=technical_detail, kind=kind)
-        return dlg.exec()
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        try:
+            return dlg.exec()
+        finally:
+            try:
+                dlg.setParent(None)
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
 
     @classmethod
     def show_info(cls, parent, title, message, advice='', technical_detail=None, kind='info'):
         dlg = cls(parent, title=title, message=message, advice=advice,
                   technical_detail=technical_detail, kind=kind)
-        return dlg.exec()
+        dlg.setAttribute(Qt.WA_DeleteOnClose, True)
+        try:
+            return dlg.exec()
+        finally:
+            try:
+                dlg.setParent(None)
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
 
 
 class StudentDrilldownDialog(QDialog):
@@ -634,8 +1006,9 @@ class StudentDrilldownDialog(QDialog):
 
     def __init__(self, parent=None, title='免勤人员明细', scope_info='', students=None):
         super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
         self.setWindowTitle(title)
-        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32)))
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32, target_widget=self)))
         self.resize(880, 560)
         self.setModal(True)
         self.raw_students = list(students or [])
@@ -646,26 +1019,19 @@ class StudentDrilldownDialog(QDialog):
 
         # 头部说明卡片
         card = QFrame()
-        card.setStyleSheet("""
-            QFrame {
-                background: #F8E7EC;
-                border: 1px solid #EBC5D1;
-                border-radius: 10px;
-                padding: 10px 14px;
-            }
-        """)
+        card.setObjectName('drilldownCard')
         c_layout = QHBoxLayout(card)
         c_layout.setContentsMargins(4, 4, 4, 4)
         c_lbl = QLabel(f'{scope_info}\n当前范围 {len(self.raw_students)} 条个人免勤记录')
         c_lbl.setTextFormat(Qt.PlainText)
-        c_lbl.setStyleSheet("font-size: 13px; color: #442332;")
+        c_lbl.setObjectName('drilldownCountLabel')
         c_layout.addWidget(c_lbl)
         layout.addWidget(card)
 
         # 搜索过滤条
         filter_bar = QHBoxLayout()
         filter_lbl = QLabel("搜索")
-        filter_lbl.setStyleSheet("font-weight: bold; color: #442332;")
+        filter_lbl.setObjectName('drilldownFilterLabel')
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText('按姓名、学院、班级或学号筛选')
         self.search_input.textChanged.connect(self._apply_filter)
@@ -683,18 +1049,9 @@ class StudentDrilldownDialog(QDialog):
         btn_bar = QHBoxLayout()
         export_btn = QPushButton("导出筛选名单…")
         export_btn.setToolTip('导出的 CSV 含有个人信息')
-        export_btn.setStyleSheet("""
-            QPushButton {
-                background: #961B48;
-                color: white;
-                font-weight: bold;
-                border-radius: 6px;
-                padding: 6px 14px;
-            }
-            QPushButton:hover {
-                background: #781236;
-            }
-        """)
+        export_btn.setObjectName('drilldownExportBtn')
+        export_btn.setIcon(ActionIcon.get('export', '#FFFFFF'))
+        export_btn.setIconSize(QSize(16, 16))
         export_btn.clicked.connect(self._export_csv)
         close_btn = QPushButton("关闭 (Esc)")
         close_btn.clicked.connect(self.accept)
@@ -704,6 +1061,8 @@ class StudentDrilldownDialog(QDialog):
         layout.addLayout(btn_bar)
 
     def _update_table(self, stu_list):
+        old_model = self.table.model()
+        old_sm = self.table.selectionModel()
         rows = []
         for i, s in enumerate(stu_list, 1):
             rows.append({
@@ -720,7 +1079,34 @@ class StudentDrilldownDialog(QDialog):
             })
         model = _GenericTableModel(self.columns, rows)
         self.table.setModel(model)
+        if old_sm is not None:
+            old_sm.deleteLater()
+        if old_model is not None:
+            old_model.deleteLater()
         self.table.resizeColumnsToContents()
+
+    def _cleanup_dialog(self):
+        self.setParent(None)
+        old_model = self.table.model()
+        old_sm = self.table.selectionModel()
+        if old_sm is not None:
+            old_sm.deleteLater()
+        if old_model is not None:
+            old_model.deleteLater()
+        self.raw_students.clear()
+        self.deleteLater()
+
+    def closeEvent(self, event):
+        self._cleanup_dialog()
+        super().closeEvent(event)
+
+    def accept(self):
+        self._cleanup_dialog()
+        super().accept()
+
+    def reject(self):
+        self._cleanup_dialog()
+        super().reject()
 
     def _apply_filter(self, kw):
         kw = normalize_student_name(kw).casefold()
@@ -750,6 +1136,8 @@ class StudentDrilldownDialog(QDialog):
                                      value.lstrip().startswith(('=', '+', '-', '@')) else value
                                      for value in values])
             QMessageBox.information(self, "导出成功", f"名单已成功导出至：\n{path}")
+            top_parent = self.parent() or self
+            ToastNotification(top_parent, '名单已成功导出', kind='success')
         except Exception as e:
             QMessageBox.critical(self, "导出失败", str(e))
 
@@ -794,11 +1182,15 @@ class DropSlot(QFrame):
         layout.addWidget(self.path_label)
 
         self.choose_btn = QPushButton('选择文件…')
+        self.choose_btn.setIcon(ActionIcon.get('document', TOKENS['colors']['primary_dark']))
+        self.choose_btn.setIconSize(QSize(16, 16))
         self.choose_btn.clicked.connect(self._on_click)
         buttons = QHBoxLayout()
         buttons.addWidget(self.choose_btn)
         if multiple:
             self.manage_btn = QPushButton('管理…')
+            self.manage_btn.setIcon(ActionIcon.get('tools', TOKENS['colors']['text']))
+            self.manage_btn.setIconSize(QSize(16, 16))
             self.manage_btn.clicked.connect(self._manage)
             buttons.addWidget(self.manage_btn)
         buttons.addStretch(1)
@@ -817,18 +1209,29 @@ class DropSlot(QFrame):
     def set_paths(self, paths):
         self.paths = unique_workbook_paths(paths)
         if self.paths:
-            label = os.path.basename(self.paths[0])
+            base_name = os.path.basename(self.paths[0])
+            size_str = ''
+            if os.path.exists(self.paths[0]):
+                try:
+                    if self.multiple and len(self.paths) > 1:
+                        total_bytes = sum(os.path.getsize(p) for p in self.paths if os.path.exists(p))
+                        size_str = f'  ({_format_file_size(total_bytes)})'
+                    else:
+                        size_str = f'  ({_format_file_size(os.path.getsize(self.paths[0]))})'
+                except Exception:
+                    size_str = ''
             if self.multiple:
-                label = f'已选 {len(self.paths)} 份 · {label}'
+                label = f'📄 已选 {len(self.paths)} 份 · {base_name}{size_str}'
             else:
-                label = f'已选择 · {label}'
+                label = f'📄 {base_name}{size_str}'
             self.path_label.setText(label)
             self.path_label.setToolTip('\n'.join(self.paths))
         else:
             self.path_label.setText(self._hint)
             self.path_label.setToolTip('')
         ready = bool(self.paths)
-        self.path_label.setStyleSheet('')
+        self.setProperty('dragReject', False)
+        self.setProperty('dragOver', False)
         self.setProperty('ready', ready)
         self.choose_btn.setText('添加表格…' if self.multiple else
                                 '重新选择…' if ready else '选择文件…')
@@ -896,25 +1299,26 @@ class DropSlot(QFrame):
               if p and os.path.splitext(p)[1].lower() in ('.xlsx', '.xlsm')]
         if not ok:
             event.ignore()
+            self.setProperty('dragOver', False)
             self.setProperty('dragReject', True)
             self._repolish()
             self.path_label.setText('请选择 .xlsx 或 .xlsm 文件。')
-            self.path_label.setStyleSheet('color:#B33C48; font-weight:bold;')
             return
         event.acceptProposedAction()
         self.setProperty('dragReject', False)
         self.setProperty('dragOver', True)
         self._repolish()
         self.path_label.setText('松开鼠标导入文件')
-        self.path_label.setStyleSheet('color:#961B48; font-weight:bold;')
 
     def dragLeaveEvent(self, event):
         self.setProperty('dragOver', False)
+        self.setProperty('dragReject', False)
         self._repolish()
         self.set_paths(self.paths)
 
     def dropEvent(self, event: QDropEvent):
         self.setProperty('dragOver', False)
+        self.setProperty('dragReject', False)
         paths = [
             u.toLocalFile()
             for u in event.mimeData().urls()
@@ -924,7 +1328,6 @@ class DropSlot(QFrame):
             self.setProperty('dragReject', True)
             self._repolish()
             self.path_label.setText('请选择 .xlsx 或 .xlsm 文件')
-            self.path_label.setStyleSheet('color:#B33C48; font-weight:bold;')
             event.ignore()
             return
 
@@ -949,6 +1352,9 @@ class DropSlot(QFrame):
 
         self.set_path(path)
         self.picked.emit(path)
+        if hasattr(top_win, '_active_toasts'):
+            msg = '免勤统计表已添加' if self.multiple else '考勤明细表解析就绪'
+            ToastNotification(top_win, msg, kind='success')
         event.acceptProposedAction()
 
 
@@ -989,9 +1395,13 @@ class ResultSlot(QFrame):
 
         row = QHBoxLayout()
         self.save_btn = QPushButton('另存结果…')
+        self.save_btn.setIcon(ActionIcon.get('save', TOKENS['colors']['primary_dark']))
+        self.save_btn.setIconSize(QSize(16, 16))
         self.save_btn.setEnabled(False)
         self.save_btn.clicked.connect(self._save_as)
         self.open_btn = QPushButton('打开所在目录')
+        self.open_btn.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
+        self.open_btn.setIconSize(QSize(16, 16))
         self.open_btn.setEnabled(False)
         self.open_btn.clicked.connect(self._open_dir)
         row.addWidget(self.save_btn)
@@ -1004,8 +1414,19 @@ class ResultSlot(QFrame):
         self._path = path or ''
         self._input_paths = input_paths
         ready = bool(self._path)
-        self.state_label.setText('已生成 · %s' % os.path.basename(self._path) if ready
-                                 else '完成计算后可另存或打开目录')
+        if ready:
+            base_name = os.path.basename(self._path)
+            size_str = ''
+            if os.path.exists(self._path):
+                try:
+                    size_str = f'  ({_format_file_size(os.path.getsize(self._path))})'
+                except Exception:
+                    size_str = ''
+            self.state_label.setText(f'🎉 已生成 · {base_name}{size_str}')
+            self.setProperty('celebration', True)
+        else:
+            self.state_label.setText('完成计算后可另存或打开目录')
+            self.setProperty('celebration', False)
         self.state_label.setToolTip(self._path)
         self.setProperty('ready', ready)
         self.save_btn.setEnabled(ready)
@@ -1133,9 +1554,12 @@ def _run_frozen_inprocess_selfcheck(emitter=None) -> tuple[int, str]:
             assert mon_rec.expected == 100 and mon_rec.exempt == 10 and mon_rec.actual == 85
             assert abs(mon_rec.rate - (85 / 90)) < 1e-6, '出勤率未严格遵循 实到/(应到-免勤) 口径'
 
-            wb_out = load_workbook(out_p, data_only=True)
-            assert wb_out['屏风'].cell(4, 3).value == '9201', '屏风表零改动校验未通过'
-            wb_out.close()
+            with open(out_p, 'rb') as f_out:
+                wb_out = load_workbook(f_out, data_only=True)
+                try:
+                    assert wb_out['屏风'].cell(4, 3).value == '9201', '屏风表零改动校验未通过'
+                finally:
+                    wb_out.close()
 
             log('  [PASS] 1/5 合成明细表与免勤表健康自检及文件分类通过\n')
             log('  [PASS] 2/5 唯一学号去重与周次×星期事件对解析通过\n')
@@ -1177,12 +1601,124 @@ class _SelfCheckThread(QThread):
         except Exception as exc:                      # noqa: BLE001
             self.output.emit('运行失败：%s\n' % exc)
 
+
+class EmptyStepCard(QFrame):
+    """Interactive visual workflow chip inside EmptyStateCard."""
+
+    def __init__(self, step_no: int, title: str, desc: str, on_click=None, parent=None):
+        super().__init__(parent)
+        self.setObjectName('emptyStepCard')
+        self._on_click = on_click
+        if on_click:
+            self.setCursor(Qt.PointingHandCursor)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(14)
+
+        badge = QLabel(str(step_no))
+        badge.setObjectName('emptyStepBadge')
+        layout.addWidget(badge)
+
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+
+        t_lbl = QLabel(title)
+        t_lbl.setObjectName('emptyStepTitle')
+        text_layout.addWidget(t_lbl)
+
+        d_lbl = QLabel(desc)
+        d_lbl.setObjectName('emptyStepDesc')
+        text_layout.addWidget(d_lbl)
+
+        layout.addLayout(text_layout, 1)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and callable(self._on_click):
+            self._on_click()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+
+class EmptyStateCard(QFrame):
+    """Friendly empty state greeting and 3-step visual workflow guidance."""
+
+    def __init__(self, main_win, parent=None):
+        super().__init__(parent)
+        self.setObjectName('emptyStateCard')
+        self._win = main_win
+
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(24, 24, 24, 24)
+        root_layout.setSpacing(18)
+
+        # Header: Mascot avatar + Welcome titles
+        header = QHBoxLayout()
+        header.setSpacing(16)
+
+        mascot_lbl = QLabel()
+        mascot_lbl.setObjectName('emptyMascot')
+        mascot_lbl.setPixmap(AttendanceIcon.pixmap(56, target_widget=self))
+        header.addWidget(mascot_lbl)
+
+        header_text = QVBoxLayout()
+        header_text.setSpacing(4)
+        welcome_title = QLabel('欢迎使用早晚自习免勤自动统计')
+        welcome_title.setObjectName('emptyWelcomeTitle')
+        header_text.addWidget(welcome_title)
+
+        welcome_sub = QLabel('智能识别三早一晚考勤与免勤名单，一键生成规范回填与学院统计分析')
+        welcome_sub.setObjectName('emptyWelcomeSubtitle')
+        header_text.addWidget(welcome_sub)
+        header.addLayout(header_text, 1)
+        root_layout.addLayout(header)
+
+        # 3-Step visual workflow chips
+        steps_layout = QVBoxLayout()
+        steps_layout.setSpacing(10)
+
+        step1 = EmptyStepCard(
+            1,
+            '步骤 1 · 拖入或选择考勤明细表',
+            '点击或按 Ctrl+O 选择原始早自习/晚自习执行情况明细表',
+            on_click=lambda: getattr(self._win, '_pick_detail', lambda: None)(),
+            parent=self,
+        )
+        step2 = EmptyStepCard(
+            2,
+            '步骤 2 · 拖入或选择免勤人员表',
+            '点击或按 Ctrl+Shift+O 添加一份或多份免勤名单 Excel 表格',
+            on_click=lambda: getattr(self._win, '_pick_exempt', lambda: None)(),
+            parent=self,
+        )
+        step3 = EmptyStepCard(
+            3,
+            '步骤 3 · 确认周次，一键开启统计运算',
+            '核对统计周次与输出路径后，按 Ctrl+Enter 开始计算',
+            on_click=lambda: getattr(self._win, '_start_run', lambda: None)(),
+            parent=self,
+        )
+        steps_layout.addWidget(step1)
+        steps_layout.addWidget(step2)
+        steps_layout.addWidget(step3)
+        root_layout.addLayout(steps_layout)
+
+        # Bottom tip
+        tip_lbl = QLabel('💡 提示：支持将 Excel 文件直接拖拽至左侧虚线框；计算完成后在此处自动生成结构化统计报告。')
+        tip_lbl.setObjectName('emptyTipText')
+        tip_lbl.setWordWrap(True)
+        root_layout.addWidget(tip_lbl)
+        root_layout.addStretch(1)
+
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f'{APP_NAME} · 草莓小熊')
-        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(64)))
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(64, target_widget=self)))
         self.resize(1360, 880)
         self.setAcceptDrops(True)
         self.result = None
@@ -1192,6 +1728,8 @@ class MainWindow(QMainWindow):
         self._pulse_timer = None
         self._pulse_active_row = None
         self._pulse_orig_color = None
+        self._active_toasts: set[ToastNotification] = set()
+        self._run_start_time = None
         self._build_ui()
         self._init_shortcuts()
         self._load_settings()
@@ -1200,6 +1738,8 @@ class MainWindow(QMainWindow):
         self.week_spin.valueChanged.connect(self._refresh_output_preview)
         self._show_empty_state()
         self._refresh_output_preview()
+        self._was_maximized = False
+        self._init_system_tray()
 
     # ------------------------------------------------------------ 设置记忆
     def _settings(self):
@@ -1254,6 +1794,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ 空状态
     def _show_empty_state(self):
+        if hasattr(self, 'summary_stack') and hasattr(self, 'empty_state_card'):
+            self.summary_stack.setCurrentWidget(self.empty_state_card)
         self.summary_view.setPlainText(
             '等待计算\n\n'
             '1. 选择执行情况明细表，再添加一份或多份免勤表。\n'
@@ -1276,7 +1818,7 @@ class MainWindow(QMainWindow):
         header = QHBoxLayout()
         header.setSpacing(12)
         avatar = QLabel()
-        avatar.setPixmap(AttendanceIcon.pixmap(66))
+        avatar.setPixmap(AttendanceIcon.pixmap(66, target_widget=self))
         avatar.setFixedSize(66, 66)
         avatar.setAlignment(Qt.AlignCenter)
         header.addWidget(avatar)
@@ -1389,6 +1931,8 @@ class MainWindow(QMainWindow):
         self.out_edit = QLineEdit()
         self.out_edit.setPlaceholderText('使用默认位置')
         btn_out = QPushButton('浏览…')
+        btn_out.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
+        btn_out.setIconSize(QSize(16, 16))
         btn_out.clicked.connect(self._pick_output)
         row3 = QHBoxLayout()
         row3.addWidget(self.out_edit)
@@ -1415,6 +1959,8 @@ class MainWindow(QMainWindow):
 
         self.run_btn = QPushButton('开始计算')
         self.run_btn.setObjectName('primaryButton')
+        self.run_btn.setIcon(ActionIcon.get('compute', '#FFFFFF'))
+        self.run_btn.setIconSize(QSize(18, 18))
         self.run_btn.setMinimumHeight(48)
         self.run_btn.setShortcut('Ctrl+Return')
         self.run_btn.setToolTip('开始计算（Ctrl+Enter）')
@@ -1436,12 +1982,18 @@ class MainWindow(QMainWindow):
         overview_actions = QHBoxLayout()
         overview_actions.addStretch(1)
         tools_button = QPushButton('更多工具…')
+        tools_button.setIcon(ActionIcon.get('tools', TOKENS['colors']['primary_dark']))
+        tools_button.setIconSize(QSize(16, 16))
         tools_button.clicked.connect(self._open_tools)
         overview_actions.addWidget(tools_button)
         overview_layout.addLayout(overview_actions)
+        self.summary_stack = QStackedWidget()
+        self.empty_state_card = EmptyStateCard(self)
         self.summary_view = QPlainTextEdit()
         self.summary_view.setReadOnly(True)
-        overview_layout.addWidget(self.summary_view, 1)
+        self.summary_stack.addWidget(self.empty_state_card)
+        self.summary_stack.addWidget(self.summary_view)
+        overview_layout.addWidget(self.summary_stack, 1)
         self.tabs.addTab(overview, '概览')
 
         self.tabs.addTab(self._build_exempt_page(), '学院免勤统计')
@@ -1512,6 +2064,8 @@ class MainWindow(QMainWindow):
         form.addRow('附加工作表', self.chk_append_sheets)
         self.dict_edit = QLineEdit(default_dictionary_path())
         btn_dict = QPushButton('浏览…')
+        btn_dict.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
+        btn_dict.setIconSize(QSize(16, 16))
         btn_dict.clicked.connect(self._pick_dict)
         dictionary = QHBoxLayout()
         dictionary.addWidget(self.dict_edit)
@@ -1519,8 +2073,12 @@ class MainWindow(QMainWindow):
         form.addRow('免勤词典文件', dictionary)
         actions = QHBoxLayout()
         reset = QPushButton('恢复默认')
+        reset.setIcon(ActionIcon.get('refresh', TOKENS['colors']['muted']))
+        reset.setIconSize(QSize(16, 16))
         reset.clicked.connect(self._reset_settings)
         self.diag_btn = QPushButton('导出诊断日志')
+        self.diag_btn.setIcon(ActionIcon.get('tools', TOKENS['colors']['text']))
+        self.diag_btn.setIconSize(QSize(16, 16))
         self.diag_btn.clicked.connect(self._export_diagnostic_log)
         actions.addWidget(reset)
         actions.addWidget(self.diag_btn)
@@ -1540,22 +2098,46 @@ class MainWindow(QMainWindow):
         row.setSpacing(10)
         values = []
         for title in titles:
-            card = QFrame()
-            card.setObjectName('metricCard')
-            content = QVBoxLayout(card)
-            content.setContentsMargins(14, 10, 14, 10)
-            content.setSpacing(2)
-            label = QLabel(title)
-            label.setObjectName('metricLabel')
-            content.addWidget(label)
-            value = QLabel('—')
-            value.setObjectName('metricValue')
-            value.setAccessibleName(title)
-            content.addWidget(value)
+            card = MetricCard(title, parent=self)
             row.addWidget(card, 1)
-            values.append(value)
+            values.append(card.value)
         layout.addLayout(row)
         return values
+
+    def _on_metric_card_clicked(self, title: str):
+        """处理指标卡片点击联动导航 (F8)。"""
+        if title == '异常条目':
+            if hasattr(self, 'tools_tabs'):
+                self.tools_tabs.setCurrentIndex(1)
+            self._open_tools()
+        elif title == '学院数':
+            if hasattr(self, 'tabs'):
+                self.tabs.setCurrentIndex(1)
+        elif title == '免勤合计 · 人次':
+            if hasattr(self, 'tabs') and self.tabs.currentIndex() == 0:
+                self.tabs.setCurrentIndex(1)
+            elif hasattr(self, 'exempt_search'):
+                self.exempt_search.clear()
+                self.exempt_search.setFocus()
+        elif title == '统计周次':
+            if hasattr(self, 'week_spin'):
+                self.week_spin.setFocus()
+                self.week_spin.selectAll()
+        elif title == '未落表 · 人次':
+            if hasattr(self, 'exempt_review'):
+                self.exempt_review.setChecked(True)
+            if hasattr(self, 'exempt_search'):
+                self.exempt_search.setFocus()
+            if hasattr(self, '_filter_exempt_rows'):
+                self._filter_exempt_rows()
+        elif '个人免勤' in title:
+            if hasattr(self, 'exempt_session'):
+                self.exempt_session.setFocus()
+        elif '集体免勤' in title:
+            if hasattr(self, 'exempt_review'):
+                self.exempt_review.toggle()
+            if hasattr(self, '_filter_exempt_rows'):
+                self._filter_exempt_rows()
 
     def _build_exempt_page(self):
         page = QWidget()
@@ -1580,10 +2162,14 @@ class MainWindow(QMainWindow):
         self.exempt_review.setToolTip('筛出待补人数、回填差额、容量超额或缺少输入的组合')
         tools.addWidget(self.exempt_review)
         self.exempt_people_btn = QPushButton('按姓名查找…')
+        self.exempt_people_btn.setIcon(ActionIcon.get('search', TOKENS['colors']['primary_dark']))
+        self.exempt_people_btn.setIconSize(QSize(16, 16))
         self.exempt_people_btn.clicked.connect(self._open_exempt_people)
         tools.addWidget(self.exempt_people_btn)
         self.exempt_export_btn = QPushButton('导出当前视图…')
         self.exempt_export_btn.setObjectName('primaryButton')
+        self.exempt_export_btn.setIcon(ActionIcon.get('export', '#FFFFFF'))
+        self.exempt_export_btn.setIconSize(QSize(16, 16))
         self.exempt_export_btn.clicked.connect(self._export_exempt_view)
         tools.addWidget(self.exempt_export_btn)
         layout.addLayout(tools)
@@ -1647,7 +2233,15 @@ class MainWindow(QMainWindow):
             college, day, session = (row[key] for key in ('学院', '星期', '自习'))
             people.extend(dict(person, day=day, session=session)
                           for person in self.result.student_details.get((college, day, session), ()))
-        StudentDrilldownDialog(self, scope_info='当前筛选范围', students=people).exec()
+        dlg = StudentDrilldownDialog(self, scope_info='当前筛选范围', students=people)
+        try:
+            dlg.exec()
+        finally:
+            try:
+                dlg.setParent(None)
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
 
     def _current_input_paths(self):
         return self.detail_slot.path(), *self.exempt_slot.paths, self.dict_edit.text().strip()
@@ -1833,20 +2427,17 @@ class MainWindow(QMainWindow):
             college_exempt=self.chk_college_exempt.isChecked(),
             include_exempt_summary=self.chk_append_sheets.isChecked(),
         )
+        self._run_start_time = datetime.now()
         self._save_settings()
         self._set_busy(True)
         self.progress.setVisible(True)
         self.progress.setFormat('正在计算第 %d 周…' % self.week_spin.value())
         self._set_status('正在读取表格、匹配免勤并写入结果…')
 
-        self.thread = QThread(self)
-        self.worker = Worker(config)
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
+        self.thread = Worker(config, self)
+        self.worker = self.thread
         self.worker.finished.connect(self._on_done)
         self.worker.failed.connect(self._on_failed)
-        self.worker.finished.connect(self.thread.quit)
-        self.worker.failed.connect(self.thread.quit)
         self.thread.finished.connect(self._cleanup_thread)
         self.thread.start()
 
@@ -1854,8 +2445,37 @@ class MainWindow(QMainWindow):
         self.progress.setVisible(False)
         self.progress.setFormat('')
         self._set_busy(False)
+        if self.thread is not None:
+            self.thread.setParent(None)
+            self.thread.deleteLater()
+        if self.worker is not None and self.worker is not self.thread:
+            self.worker.setParent(None)
+            self.worker.deleteLater()
         self.thread = None
         self.worker = None
+        self._trim_memory()
+
+    def _trim_memory(self):
+        """最小化到托盘或计算结束后的内存修剪，防止长期驻留导致 RSS 膨胀。"""
+        import gc
+        gc.collect()
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                import ctypes.wintypes
+                k32 = ctypes.windll.kernel32
+                k32.GetCurrentProcess.restype = ctypes.wintypes.HANDLE
+                k32.SetProcessWorkingSetSize.argtypes = [
+                    ctypes.wintypes.HANDLE,
+                    ctypes.c_size_t,
+                    ctypes.c_size_t,
+                ]
+                k32.SetProcessWorkingSetSize.restype = ctypes.wintypes.BOOL
+                h_proc = k32.GetCurrentProcess()
+                max_size_t = ctypes.c_size_t(-1).value
+                k32.SetProcessWorkingSetSize(h_proc, max_size_t, max_size_t)
+            except Exception:
+                pass
 
     def _set_busy(self, busy: bool):
         """计算期间禁用一切会改变输入的控件，避免算到一半被改动。"""
@@ -1863,6 +2483,14 @@ class MainWindow(QMainWindow):
         for widget in (self.settings_panel, self.detail_slot, self.exempt_slot,
                        self.result_slot, self.tabs, self.tools_dialog):
             widget.setEnabled(not busy)
+        if busy:
+            self.run_btn.setEnabled(False)
+            self.run_btn.setText('正在计算…')
+            self.run_btn.setIcon(ActionIcon.get('loading', '#FFFFFF'))
+        else:
+            self.run_btn.setEnabled(True)
+            self.run_btn.setText('开始计算')
+            self.run_btn.setIcon(ActionIcon.get('compute', '#FFFFFF'))
 
     # ------------------------------------------------------------ 输出路径
     def _default_output_path(self):
@@ -1916,10 +2544,15 @@ class MainWindow(QMainWindow):
         self._last_error_trace = None
         self._render(result)
         self.result_slot.set_result(result.output_path, result.input_paths)
+        start_time = getattr(self, '_run_start_time', None) or datetime.now()
+        elapsed = (datetime.now() - start_time).total_seconds()
+        elapsed_str = f"{max(0.1, elapsed):.1f}"
+        celebration_msg = f"🎉 计算完成 · 耗时 {elapsed_str} 秒 · 结果文件已就绪"
         if any(item['type'] == '模板标题周次不一致' for item in result.anomalies):
             self._set_status('计算完成 · 表内标题与统计周次有差异，详见概览。', 'warn')
         else:
-            self._set_status('计算完成 · %s' % result.output_path)
+            self._set_status(celebration_msg, 'success')
+        ToastNotification(self, "统计完成！已生成结果工作簿，可在右侧打开或另存", kind="success")
         self._warn_if_week_mismatch(result)
 
     def _warn_if_week_mismatch(self, result):
@@ -1970,6 +2603,8 @@ class MainWindow(QMainWindow):
         lines.append('结果工作簿')
         lines.append(str(result.output_path))
         self.summary_view.setPlainText('\n'.join(lines))
+        if hasattr(self, 'summary_stack'):
+            self.summary_stack.setCurrentWidget(self.summary_view)
 
         # ---- 学院出勤率：缺失值显示「—」，状态非「完整」的行整行给警示底色 ----
         rate_rows = []
@@ -2107,8 +2742,14 @@ class MainWindow(QMainWindow):
                 self._pulse_timer = None
             self._pulse_active_row = None
             self._pulse_orig_color = None
+        old_model = view.model()
+        old_sm = view.selectionModel()
         model = _GenericTableModel(columns, rows, row_colors, cell_styles)
         view.setModel(model)
+        if old_sm is not None:
+            old_sm.deleteLater()
+        if old_model is not None:
+            old_model.deleteLater()
         view.setSelectionBehavior(QAbstractItemView.SelectRows)
         view.setAlternatingRowColors(True)
         view.verticalHeader().setVisible(False)
@@ -2168,6 +2809,8 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(bar)
         layout.addStretch(1)
         save_btn = QPushButton('保存词典')
+        save_btn.setIcon(ActionIcon.get('save_disk', TOKENS['colors']['primary_dark']))
+        save_btn.setIconSize(QSize(16, 16))
         save_btn.clicked.connect(self._save_dictionary)
         layout.addWidget(save_btn)
         self.dict_tabs.addTab(bar, '▾')
@@ -2204,6 +2847,7 @@ class MainWindow(QMainWindow):
         self._selfcheck_thread.output.connect(self.selfcheck_box.appendPlainText)
         self._selfcheck_thread.finished.connect(
             lambda: self._set_status('测试套件已跑完，输出见「合成数据自测」页。'))
+        self._selfcheck_thread.finished.connect(self._selfcheck_thread.deleteLater)
         self._selfcheck_thread.start()
 
     # ------------------------------------------------------------ 智能多文件拖放支持
@@ -2265,8 +2909,10 @@ class MainWindow(QMainWindow):
         elif details:
             self.detail_slot.set_path(details[0])
             self.detail_slot.picked.emit(details[0])
+            ToastNotification(self, "考勤明细表解析就绪", kind="success")
         if exemptions:
             self.exempt_slot.set_paths((*self.exempt_slot.paths, *exemptions))
+            ToastNotification(self, "免勤统计表已添加", kind="success")
         if unknown:
             self._set_status(f'有 {len(unknown)} 份表无法识别，请拖到对应的文件槽。', 'warn')
         elif len(details) <= 1 and (details or exemptions):
@@ -2327,7 +2973,14 @@ class MainWindow(QMainWindow):
             scope_info=f"{sheet} / {college} / {day} / {session}",
             students=students
         )
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            try:
+                dlg.setParent(None)
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
 
     def _on_room_row_double_clicked(self, index: QModelIndex):
         """双击教室明细行，穿透显示该教室命中的免勤学生详细名单。"""
@@ -2358,7 +3011,14 @@ class MainWindow(QMainWindow):
             scope_info=f"{sheet} / 教室 {room} (分配班级: {classes})",
             students=all_room_students
         )
-        dlg.exec()
+        try:
+            dlg.exec()
+        finally:
+            try:
+                dlg.setParent(None)
+                dlg.deleteLater()
+            except RuntimeError:
+                pass
 
     def _parse_scope_target(self, scope: str, note: str = '') -> tuple[str, str, str]:
         """从异常清单的「范围」与「说明」字段提取目标 (工作表, 学院, 教室)。"""
@@ -2534,7 +3194,7 @@ class MainWindow(QMainWindow):
                 self._pulse_timer = None
 
         self._pulse_timer.timeout.connect(_tick)
-        self._pulse_timer.start(250)
+        self._pulse_timer.start(get_animation_duration(250))
 
     # ------------------------------------------------------------ 导出脱敏诊断日志
     def _export_diagnostic_log(self):
@@ -2590,6 +3250,138 @@ class MainWindow(QMainWindow):
             '诊断日志已保存至：\n%s\n分享前请检查内容。' % target_path
         )
         self._set_status('诊断日志已保存 · %s' % target_path, 'ok')
+
+    # ------------------------------------------------------------ 系统托盘与生命周期
+    def _init_system_tray(self):
+        """初始化系统托盘图标、右键菜单与事件监听。"""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon = None
+            return
+
+        qapp = QApplication.instance()
+        if qapp:
+            qapp.setQuitOnLastWindowClosed(False)
+
+        # 1. 加载高清多分辨率图标
+        base_dir = getattr(sys, '_MEIPASS', PROJECT_DIR)
+        ico_path = os.path.join(base_dir, 'assets', 'attendance.ico')
+        if os.path.exists(ico_path):
+            icon = QIcon(ico_path)
+        else:
+            icon = QIcon(AttendanceIcon.pixmap(32, target_widget=self))
+        if icon.isNull():
+            icon = QIcon(AttendanceIcon.pixmap(32, target_widget=self))
+
+        self.tray_icon = QSystemTrayIcon(icon, self)
+        self.tray_icon.setToolTip(f'{APP_NAME} v{APP_VERSION} · 草莓小熊')
+
+        # 2. 托盘右键菜单
+        self.tray_menu = QMenu(self)
+        self.restore_action = self.tray_menu.addAction('恢复显示')
+        self.restore_action.triggered.connect(self.restore_window)
+        font = self.restore_action.font()
+        font.setBold(True)
+        self.restore_action.setFont(font)
+        self.tray_menu.setDefaultAction(self.restore_action)
+
+        self.tray_menu.addSeparator()
+
+        self.exit_action = self.tray_menu.addAction('彻底退出')
+        self.exit_action.triggered.connect(self.clean_exit)
+
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+        self.tray_icon.show()
+
+    def changeEvent(self, event):
+        """捕获窗口状态变化，处理最小化到托盘。"""
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMinimized():
+                if getattr(self, 'tray_icon', None) is not None:
+                    QTimer.singleShot(0, lambda: self.hide() if self.isMinimized() else None)
+                    if self.tray_icon.supportsMessages():
+                        self.tray_icon.showMessage(
+                            APP_NAME,
+                            '程序已最小化到系统托盘，双击或右键托盘图标可恢复显示。',
+                            QSystemTrayIcon.MessageIcon.Information,
+                            2000
+                        )
+                self._trim_memory()
+            else:
+                self._was_maximized = self.isMaximized()
+        super().changeEvent(event)
+
+    def _on_tray_activated(self, reason):
+        """响应托盘图标点击与双击。"""
+        if reason in (QSystemTrayIcon.ActivationReason.DoubleClick,
+                      QSystemTrayIcon.ActivationReason.Trigger):
+            self.restore_window()
+
+    def restore_window(self):
+        """恢复主窗口并置于前台激活。"""
+        state = self.windowState() & ~Qt.WindowMinimized
+        if getattr(self, '_was_maximized', False):
+            state |= Qt.WindowMaximized
+        self.setWindowState(state)
+        self.setVisible(True)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        if sys.platform == 'win32':
+            try:
+                import ctypes
+                ctypes.windll.user32.SetForegroundWindow(int(self.winId()))
+            except Exception:
+                pass
+
+    def clean_exit(self):
+        """彻底安全退出程序，清理托盘与后台线程。"""
+        if getattr(self, '_is_cleaning_exit', False):
+            return
+        self._is_cleaning_exit = True
+
+        if getattr(self, 'tray_icon', None) is not None:
+            self.tray_icon.hide()
+            self.tray_icon.deleteLater()
+            self.tray_icon = None
+
+        if hasattr(self, '_active_toasts'):
+            for toast in list(self._active_toasts):
+                try:
+                    toast.close()
+                    toast.deleteLater()
+                except Exception:
+                    pass
+            self._active_toasts.clear()
+
+        if getattr(self, '_pulse_timer', None) and self._pulse_timer.isActive():
+            self._pulse_timer.stop()
+
+        if getattr(self, '_selfcheck_thread', None) and self._selfcheck_thread.isRunning():
+            self._selfcheck_thread.terminate()
+            self._selfcheck_thread.wait(1000)
+
+        if getattr(self, 'thread', None) and self.thread.isRunning():
+            self.thread.quit()
+            if not self.thread.wait(1500):
+                self.thread.terminate()
+                self.thread.wait(500)
+
+        try:
+            self._save_settings()
+        except Exception:
+            pass
+
+        self.hide()
+
+        qapp = QApplication.instance()
+        if qapp:
+            qapp.quit()
+
+    def closeEvent(self, event):
+        """主窗口关闭事件处理。"""
+        self.clean_exit()
+        event.accept()
 
 
 
