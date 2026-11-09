@@ -161,27 +161,26 @@ jobs:
           ls -la
 
       - name: Create or Update GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: 三早一晚免勤自动统计 · 全平台最新发布版
-          draft: false
-          prerelease: false
-          files: release-assets/*
-          make_latest: true
-          body: |
-            ## 🎉 三早一晚免勤自动统计系统发布包
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cat << 'EOF' > release_notes.md
+          ## 🎉 三早一晚免勤自动统计系统发布包
 
-            本版本已升级为豪华大气可爱的「草莓小熊」视觉设计，纯本地离线 SQLite 数据库存管与 50MB 配额守护，支持自动填好回填明细表与内置标准终稿汇总表。
+          本版本已升级为豪华大气可爱的「草莓小熊」视觉设计，纯本地离线 SQLite 数据库存管与 50MB 配额守护，支持自动填好回填明细表与内置标准终稿汇总表。
 
-            ### 📦 多系统分发文件
-            - **Windows**: `三早一晚自动统计_Windows便携版.zip`（解压即用，无外部依赖）
-            - **macOS**: `三早一晚自动统计_macOS版.tar.gz`
-            - **Linux / 华为 openEuler / 统信 UOS**: `三早一晚自动统计_Linux_华为openEuler版.tar.gz`
-            - 各系统压缩包均附带独立的 `.sha256` 校验和文件。
+          ### 📦 多系统分发文件
+          - **Windows**: `三早一晚自动统计_Windows便携版.zip`（解压即用，无外部依赖）
+          - **macOS**: `三早一晚自动统计_macOS版.tar.gz`
+          - **Linux / 华为 openEuler / 统信 UOS**: `三早一晚自动统计_Linux_华为openEuler版.tar.gz`
+          - 各系统压缩包均附带独立的 `.sha256` 校验和文件。
 
-            ### 🔒 核心特性
-            1. **零数据外泄**：纯本地运算与 SQLite 存储，不传任何个人数据到云端。
-            2. **内置官方终稿模板**：无需寻找空模板，自动依据 15 学院考勤数据回填并排版终稿。
-            3. **双表清晰隔离**：回填明细表与终稿汇总表双卡片操作，杜绝误点混淆。
-            4. **轻量化加载**：剔除所有测试与不相关动态库，冷启动极速。
+          ### 🔒 核心特性
+          1. **零数据外泄**：纯本地运算与 SQLite 存储，不传任何个人数据到云端。
+          2. **内置官方终稿模板**：无需寻找空模板，自动依据 15 学院考勤数据回填并排版终稿。
+          3. **双表清晰隔离**：回填明细表与终稿汇总表双卡片操作，杜绝误点混淆。
+          4. **轻量化加载**：剔除所有测试与不相关动态库，冷启动极速。
+          EOF
+          gh release edit latest --title "三早一晚免勤自动统计 · 全平台最新发布版" --notes-file release_notes.md || \
+          gh release create latest --title "三早一晚免勤自动统计 · 全平台最新发布版" --notes-file release_notes.md
+          gh release upload latest release-assets/* --clobber
