@@ -186,17 +186,28 @@ class ActionIcon:
 
     @staticmethod
     def _render_pixmap(kind: str, size: int, color_hex: str) -> QPixmap:
-        px = QPixmap(size, size)
+        dpr = 1.0
+        app = QApplication.instance()
+        if app:
+            try:
+                dpr = float(app.devicePixelRatio())
+            except Exception:
+                dpr = 1.0
+        if dpr <= 0:
+            dpr = 1.0
+        phys_size = max(1, int(round(size * dpr)))
+        px = QPixmap(phys_size, phys_size)
         px.fill(Qt.transparent)
         p = QPainter(px)
         p.setRenderHint(QPainter.Antialiasing)
-        p.scale(size / 24.0, size / 24.0)
+        scale_factor = phys_size / 24.0
+        p.scale(scale_factor, scale_factor)
         color = QColor(color_hex)
         pen = QPen(color, 2.0, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
 
-        if kind in ('document', 'file', 'table'):
+        if kind in ('document', 'file'):
             path = QPainterPath()
             path.moveTo(5, 3)
             path.lineTo(14, 3)
@@ -209,47 +220,86 @@ class ActionIcon:
             p.drawLine(QPointF(14, 8), QPointF(19, 8))
             p.drawLine(QPointF(8, 12), QPointF(16, 12))
             p.drawLine(QPointF(8, 16), QPointF(13, 16))
-        elif kind in ('play', 'compute', 'sparkle'):
+        elif kind == 'table':
+            p.drawRoundedRect(QRectF(3.5, 3.5, 17, 17), 2.0, 2.0)
+            p.drawLine(QPointF(3.5, 8.5), QPointF(20.5, 8.5))
+            p.drawLine(QPointF(9.5, 8.5), QPointF(9.5, 20.5))
+            p.drawLine(QPointF(3.5, 14.5), QPointF(20.5, 14.5))
+        elif kind in ('play', 'compute', 'calculate'):
             path = QPainterPath()
-            path.moveTo(8, 5)
-            path.lineTo(18, 12)
-            path.lineTo(8, 19)
+            path.moveTo(8.5, 6.0)
+            path.lineTo(18.0, 12.0)
+            path.lineTo(8.5, 18.0)
             path.closeSubpath()
             p.setBrush(QBrush(color))
             p.drawPath(path)
-        elif kind in ('export', 'save', 'save_as'):
-            p.drawLine(QPointF(4, 16), QPointF(4, 20))
-            p.drawLine(QPointF(4, 20), QPointF(20, 20))
-            p.drawLine(QPointF(20, 20), QPointF(20, 16))
-            p.drawLine(QPointF(12, 4), QPointF(12, 15))
-            p.drawLine(QPointF(8, 11), QPointF(12, 15))
-            p.drawLine(QPointF(16, 11), QPointF(12, 15))
+        elif kind in ('sparkle', 'magic'):
+            # 4-pointed astroid star with soft concave arcs
+            path = QPainterPath()
+            path.moveTo(12, 3)
+            path.quadTo(12, 12, 21, 12)
+            path.quadTo(12, 12, 12, 21)
+            path.quadTo(12, 12, 3, 12)
+            path.quadTo(12, 12, 12, 3)
+            path.closeSubpath()
+            p.setBrush(QBrush(color))
+            p.drawPath(path)
+            p.drawEllipse(QRectF(17, 4, 2.5, 2.5))
+        elif kind in ('export', 'save_as', 'upload', 'save'):
+            # Tray below, arrow pointing UP/OUT
+            tray = QPainterPath()
+            tray.moveTo(4, 14)
+            tray.lineTo(4, 19)
+            tray.quadTo(4, 20.5, 5.5, 20.5)
+            tray.lineTo(18.5, 20.5)
+            tray.quadTo(20, 20.5, 20, 19)
+            tray.lineTo(20, 14)
+            p.drawPath(tray)
+            p.drawLine(QPointF(12, 15), QPointF(12, 4.5))
+            head = QPainterPath()
+            head.moveTo(7.5, 9)
+            head.lineTo(12, 4.5)
+            head.lineTo(16.5, 9)
+            p.drawPath(head)
         elif kind in ('folder', 'folder_open', 'dir'):
-            p.drawLine(QPointF(3, 7), QPointF(8, 7))
-            p.drawLine(QPointF(10, 9), QPointF(21, 9))
-            p.drawLine(QPointF(3, 7), QPointF(3, 19))
-            p.drawLine(QPointF(3, 19), QPointF(19, 19))
-            p.drawLine(QPointF(21, 9), QPointF(21, 19))
+            # Closed rounded flap with semi-transparent brush fill, no wireframe line bleed-through
+            back = QPainterPath()
+            back.moveTo(3, 7)
+            back.lineTo(8, 7)
+            back.lineTo(10, 9)
+            back.lineTo(20, 9)
+            back.quadTo(21, 9, 21, 10)
+            back.lineTo(21, 18)
+            back.lineTo(3, 18)
+            back.closeSubpath()
+            p.drawPath(back)
+
             flap = QPainterPath()
-            flap.moveTo(2, 19)
-            flap.lineTo(5, 12)
-            flap.lineTo(22, 12)
-            flap.lineTo(19, 19)
+            flap.moveTo(2.5, 19)
+            flap.lineTo(5.5, 12)
+            flap.lineTo(21.5, 12)
+            flap.lineTo(18.5, 19)
             flap.closeSubpath()
+            p.setBrush(QColor('#FFF8FA'))
             p.drawPath(flap)
+            p.setBrush(Qt.NoBrush)
         elif kind in ('tools', 'settings', 'gear'):
-            p.drawEllipse(QRectF(6.5, 6.5, 11, 11))
-            p.drawEllipse(QRectF(9.5, 9.5, 5, 5))
-            for angle in range(0, 360, 60):
+            # 8 symmetrical rounded trapezoidal teeth at 45 deg intervals
+            for i in range(8):
+                angle = i * 45.0
                 p.save()
                 p.translate(12, 12)
                 p.rotate(angle)
-                p.drawLine(QPointF(0, -5.5), QPointF(0, -9))
+                p.drawRoundedRect(QRectF(-1.8, -9.5, 3.6, 3.2), 0.8, 0.8)
                 p.restore()
+            p.drawEllipse(QRectF(4.5, 4.5, 15.0, 15.0))
+            p.drawEllipse(QRectF(9.0, 9.0, 6.0, 6.0))
         elif kind in ('search', 'magnifier'):
-            p.drawEllipse(QRectF(4, 4, 11, 11))
-            p.drawLine(QPointF(12.5, 12.5), QPointF(19.5, 19.5))
+            # Lens center (10, 10) radius 4.5, handle tangent at (13.18, 13.18) to (19, 19), no interior penetration
+            p.drawEllipse(QRectF(5.5, 5.5, 9.0, 9.0))
+            p.drawLine(QPointF(13.18, 13.18), QPointF(19.0, 19.0))
         elif kind in ('save_disk', 'disk'):
+            # Label rectangle terminates at y=18, strictly 2px above outer border y=20
             path = QPainterPath()
             path.moveTo(4, 4)
             path.lineTo(17, 4)
@@ -258,12 +308,16 @@ class ActionIcon:
             path.lineTo(4, 20)
             path.closeSubpath()
             p.drawPath(path)
-            p.drawRect(QRectF(7, 4, 10, 6))
-            p.drawRect(QRectF(6, 13, 12, 7))
+            p.drawRect(QRectF(7, 4, 10, 5))
+            p.drawRect(QRectF(6, 12, 12, 6))
         elif kind in ('refresh', 'reset'):
-            p.drawArc(QRectF(5, 5, 14, 14), 45 * 16, 270 * 16)
-            p.drawLine(QPointF(15, 4), QPointF(19, 6))
-            p.drawLine(QPointF(17, 10), QPointF(19, 6))
+            # Arc 45 to 315 deg, arrowhead smoothly tangent to arc end
+            p.drawArc(QRectF(5.5, 5.5, 13.0, 13.0), 45 * 16, 270 * 16)
+            head = QPainterPath()
+            head.moveTo(13.0, 6.0)
+            head.lineTo(17.5, 6.5)
+            head.lineTo(16.5, 11.0)
+            p.drawPath(head)
         elif kind in ('loading', 'spinner'):
             for i in range(8):
                 angle = i * 45
@@ -276,40 +330,90 @@ class ActionIcon:
                 p.drawLine(QPointF(0, -6), QPointF(0, -9))
                 p.restore()
         elif kind in ('dashboard', 'overview'):
-            p.drawRoundedRect(QRectF(3, 3, 7.5, 7.5), 2, 2)
-            p.drawRoundedRect(QRectF(13.5, 3, 7.5, 5), 2, 2)
-            p.drawRoundedRect(QRectF(13.5, 10.5, 7.5, 10.5), 2, 2)
-            p.drawRoundedRect(QRectF(3, 13.5, 7.5, 7.5), 2, 2)
+            p.drawRoundedRect(QRectF(3.5, 3.5, 7.0, 7.0), 2, 2)
+            p.drawRoundedRect(QRectF(13.5, 3.5, 7.0, 5.0), 2, 2)
+            p.drawRoundedRect(QRectF(13.5, 11.5, 7.0, 9.0), 2, 2)
+            p.drawRoundedRect(QRectF(3.5, 13.5, 7.0, 7.0), 2, 2)
         elif kind in ('percent', 'rate'):
-            p.drawEllipse(QRectF(5, 5, 4.5, 4.5))
-            p.drawEllipse(QRectF(14.5, 14.5, 4.5, 4.5))
-            p.drawLine(QPointF(18, 5), QPointF(6, 19))
+            p.setBrush(QBrush(color))
+            p.drawEllipse(QPointF(7.5, 7.5), 2.5, 2.5)
+            p.drawEllipse(QPointF(16.5, 16.5), 2.5, 2.5)
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(17.5, 6.5), QPointF(6.5, 17.5))
         elif kind in ('dictionary', 'book'):
-            path = QPainterPath()
-            path.moveTo(4, 5)
-            path.lineTo(11, 4)
-            path.lineTo(11, 20)
-            path.lineTo(4, 19)
-            path.closeSubpath()
-            path.moveTo(20, 5)
-            path.lineTo(13, 4)
-            path.lineTo(13, 20)
-            path.lineTo(20, 19)
-            path.closeSubpath()
-            p.drawPath(path)
-        elif kind in ('database', 'db'):
+            left = QPainterPath()
+            left.moveTo(11.5, 5)
+            left.quadTo(8.0, 4.0, 4.0, 5.0)
+            left.lineTo(4.0, 19.0)
+            left.quadTo(8.0, 18.0, 11.5, 19.0)
+            left.closeSubpath()
+            p.drawPath(left)
+            right = QPainterPath()
+            right.moveTo(12.5, 5)
+            right.quadTo(16.0, 4.0, 20.0, 5.0)
+            right.lineTo(20.0, 19.0)
+            right.quadTo(16.0, 18.0, 12.5, 19.0)
+            right.closeSubpath()
+            p.drawPath(right)
+        elif kind in ('database', 'db', 'storage'):
             p.drawEllipse(QRectF(4, 4, 16, 5))
             p.drawArc(QRectF(4, 9, 16, 5), 180 * 16, 180 * 16)
-            p.drawArc(QRectF(4, 15, 16, 5), 180 * 16, 180 * 16)
-            p.drawLine(QPointF(4, 6.5), QPointF(4, 17.5))
-            p.drawLine(QPointF(20, 6.5), QPointF(20, 17.5))
+            p.drawArc(QRectF(4, 14, 16, 5), 180 * 16, 180 * 16)
+            p.drawLine(QPointF(4, 6.5), QPointF(4, 16.5))
+            p.drawLine(QPointF(20, 6.5), QPointF(20, 16.5))
         elif kind in ('chart', 'chart_bar'):
             p.drawLine(QPointF(3, 20), QPointF(21, 20))
             p.drawLine(QPointF(3, 4), QPointF(3, 20))
             p.drawRect(QRectF(5.5, 12, 3.5, 8))
             p.drawRect(QRectF(10.5, 8, 3.5, 12))
             p.drawRect(QRectF(15.5, 5, 3.5, 15))
+        elif kind in ('check_circle', 'check', 'success'):
+            p.drawEllipse(QRectF(3.5, 3.5, 17.0, 17.0))
+            chk = QPainterPath()
+            chk.moveTo(7.5, 12.0)
+            chk.lineTo(10.5, 15.0)
+            chk.lineTo(16.5, 9.0)
+            p.drawPath(chk)
+        elif kind in ('alert_circle', 'alert', 'warn', 'warning'):
+            tri = QPainterPath()
+            tri.moveTo(12, 3.5)
+            tri.lineTo(20.5, 18.5)
+            tri.quadTo(21.0, 19.5, 20.0, 20.0)
+            tri.lineTo(4.0, 20.0)
+            tri.quadTo(3.0, 19.5, 3.5, 18.5)
+            tri.closeSubpath()
+            p.drawPath(tri)
+            p.drawLine(QPointF(12, 8.5), QPointF(12, 13.5))
+            p.drawEllipse(QRectF(11.2, 15.5, 1.6, 1.6))
+        elif kind in ('info_circle', 'info'):
+            p.drawEllipse(QRectF(3.5, 3.5, 17.0, 17.0))
+            p.drawEllipse(QRectF(11.2, 7.5, 1.6, 1.6))
+            p.drawLine(QPointF(12, 11.0), QPointF(12, 16.5))
+        elif kind in ('lightbulb', 'idea', 'tip'):
+            bulb = QPainterPath()
+            bulb.moveTo(9, 16)
+            bulb.lineTo(9, 15)
+            bulb.quadTo(5.5, 12, 5.5, 8.5)
+            bulb.arcTo(QRectF(5.5, 3.5, 13, 13), 180, -180)
+            bulb.quadTo(18.5, 12, 15, 15)
+            bulb.lineTo(15, 16)
+            bulb.closeSubpath()
+            p.drawPath(bulb)
+            p.drawLine(QPointF(9, 18.5), QPointF(15, 18.5))
+            p.drawLine(QPointF(10.5, 20.5), QPointF(13.5, 20.5))
+        elif kind in ('lightning', 'flash', 'quick'):
+            bolt = QPainterPath()
+            bolt.moveTo(13, 3)
+            bolt.lineTo(6, 13)
+            bolt.lineTo(12, 13)
+            bolt.lineTo(11, 21)
+            bolt.lineTo(18, 11)
+            bolt.lineTo(12, 11)
+            bolt.closeSubpath()
+            p.setBrush(QBrush(color))
+            p.drawPath(bolt)
         p.end()
+        px.setDevicePixelRatio(dpr)
         return px
 
 
@@ -328,11 +432,19 @@ TOKENS = {
         'text_strong': '#391525',
         'muted': '#70515C',
         'slate': '#795F68',
-        'primary': '#961B48',
-        'primary_dark': '#781236',
-        'primary_light': '#F8E7EC',
-        'primary_hover': '#82153C',
+        'primary': '#8B1E3F',              # 基准主色锚点 (Strawberry Bear wine red)
+        'primary_900': '#5E1028',
+        'primary_800': '#781236',
+        'primary_700': '#8B1E3F',
+        'primary_600': '#A3264C',
+        'primary_500': '#BF335D',
+        'primary_100': '#F7DDE3',
+        'primary_50': '#FCF2F4',
+        'primary_dark': '#781236',         # 向后兼容
+        'primary_light': '#F7DDE3',        # 向后兼容
+        'primary_hover': '#A3264C',        # 向后兼容
         'primary_container': '#FFEBF0',
+        'text_disabled': '#7B636A',        # WCAG AA >= 4.5:1 对比度 (4.530:1 vs #F3E7E5)
         'green_fg': '#146F64',
         'danger': '#B33C48',
         'warn_bg': '#' + WARN_RGB,  # '#FFF6DC'
@@ -351,11 +463,11 @@ TOKENS = {
         'sm': 8,
         'md': 12,
         'lg': 16,
-        'xl': 24,
-        'xxl': 32,
+        'xl': 20,
+        'xxl': 24,
     },
     'radii': {
-        'sm': '4px',
+        'sm': '6px',
         'md': '8px',
         'lg': '12px',
         'pill': '9999px',
@@ -370,7 +482,7 @@ TOKENS = {
     },
     'elevation': {
         'card_rest': 'border: 1px solid #E2D2CF',
-        'card_hover': 'border: 1px solid #961B48',
+        'card_hover': 'border: 1px solid #8B1E3F',
         'dialog': 'border: 1px solid #E2D2CF',
     },
 }
@@ -391,7 +503,8 @@ QToolTip { background:#442332; color:#FFFFFF; border:none; border-radius:6px; pa
 /* ---------- 三槽流水线与卡片容器 ---------- */
 QFrame#dropSlot, QFrame#settingsPanel, QFrame#metricCard {
     background:%(card)s; border:1px solid %(border)s; border-radius:10px; }
-QFrame#dropSlot { border-color:#C78E9C; }
+QFrame#dropSlot { border:2px dashed #D6A4B1; border-radius:12px; }
+QFrame#dropSlot:hover { border-color:%(primary)s; background:#FFFDFE; }
 QFrame#dropSlot[dragOver="true"] { background:%(primary_light)s; border:2px solid %(primary)s; }
 QFrame#dropSlot[dragOver="true"] QLabel#slotPath { color:%(primary)s; font-weight:bold; }
 QFrame#dropSlot[dragReject="true"] { background:#FFF2F2; border:2px solid #FFAAA6; }
@@ -401,6 +514,8 @@ QLabel#slotBadge { color:#FFFFFF; font-weight:bold; border-radius:8px; padding:3
 QLabel#slotTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
 QLabel#slotPath { color:%(muted)s; background:#FFFFFF; border:1px solid %(border)s;
                   border-radius:6px; padding:4px 9px; }
+QFrame#dropSlot[ready="true"] { border:1.5px solid #146F64; background:#FAFCFB; }
+QFrame#dropSlot[ready="true"]:hover { border-color:#0E564D; background:#F2FAF8; }
 QFrame#dropSlot[ready="true"] QLabel#slotPath { color:%(green_fg)s; font-weight:600; }
 QFrame#dropSlot[celebration="true"] { border:1.5px solid %(green_fg)s; background:#F2FAF8; }
 QFrame#brandDivider { background:#C78E9C; }
@@ -419,16 +534,16 @@ QWidget#reportTools, QTabWidget QWidget#contentPage { background:%(card)s; }
 QPushButton { background:%(card)s; color:%(text)s; border:1px solid %(control)s;
               border-radius:8px; padding:6px 14px; min-height:22px; font-weight:500; }
 QPushButton:hover { border-color:%(primary)s; color:%(primary_dark)s; background:#F9EDF0; }
-QPushButton:pressed { background:#F4DFE5; border-color:%(primary_dark)s; }
+QPushButton:pressed { background:#F4DFE5; border-color:%(primary_dark)s; padding-top:7px; padding-bottom:5px; }
 QPushButton:focus { border:1.5px solid %(primary)s; }
-QPushButton:disabled { color:#7F696E; background:#F4EDE9; border-color:#EADCD8; }
+QPushButton:disabled { color:%(text_disabled)s; background:#F4EDE9; border-color:#EADCD8; }
 QPushButton#primaryButton { background:%(primary)s; color:#FFFFFF; border:2px solid %(primary)s;
                             border-radius:8px; font-weight:bold; font-size:14px; padding:6px 14px;
                             min-height:24px; }
 QPushButton#primaryButton:hover { background:%(primary_hover)s; border-color:%(primary_hover)s; }
-QPushButton#primaryButton:pressed { background:%(primary_dark)s; border-color:%(primary_dark)s; }
+QPushButton#primaryButton:pressed { background:%(primary_dark)s; border-color:%(primary_dark)s; padding-top:7px; padding-bottom:5px; }
 QPushButton#primaryButton:focus { border-color:#5F102D; }
-QPushButton#primaryButton:disabled { background:#F3E7E5; color:#7A6069; border-color:#F3E7E5; }
+QPushButton#primaryButton:disabled { background:#F3E7E5; color:%(text_disabled)s; border-color:#F3E7E5; }
 QPushButton#privacyLink { background:transparent; color:%(primary)s; border:1px solid transparent; }
 QPushButton#privacyLink:hover, QPushButton#privacyLink:focus {
     background:%(primary_light)s; border-color:%(border)s; }
@@ -439,7 +554,7 @@ QLineEdit, QComboBox, QSpinBox { background:%(card)s; color:%(text)s;
     selection-background-color:#EBC5D1; selection-color:%(text_strong)s; }
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus { border:2px solid %(primary)s; background:#FFFCFA; }
 QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled {
-    color:#7F696E; background:#F4EDE9; border-color:#EADCD8; }
+    color:%(text_disabled)s; background:#F4EDE9; border-color:#EADCD8; }
 QLineEdit::placeholder { color:#7A6069; }
 QComboBox QAbstractItemView { background:%(card)s; border:1.5px solid %(control)s;
     selection-background-color:%(primary_light)s; selection-color:%(text)s; outline:none; border-radius:6px; }
@@ -464,7 +579,7 @@ QTabBar::tab { background:transparent; color:%(muted)s; padding:8px 12px;
 QTabBar::tab:hover { color:%(primary_dark)s; background:#F9EDF0; }
 QTabBar::tab:selected { background:%(card)s; color:%(primary_dark)s; font-weight:bold;
                          border-bottom:2.5px solid %(primary)s; }
-QTabBar::tab:disabled { color:#8C767C; }
+QTabBar::tab:disabled { color:%(text_disabled)s; }
 QTabWidget#workspaceTabs > QTabBar::tab {
     background: #FFFFFF;
     color: %(primary_dark)s;
@@ -485,6 +600,10 @@ QTabWidget#workspaceTabs > QTabBar::tab:selected {
     color: #FFFFFF;
     border: 1.5px solid %(primary_dark)s;
     font-weight: bold;
+}
+QTabWidget#workspaceTabs > QTabBar::tab:pressed {
+    padding-top: 7px;
+    padding-bottom: 5px;
 }
 
 /* ---------- 豪华大气可爱：本地计算与双表结果卡片 ---------- */
@@ -513,6 +632,12 @@ QPushButton#dbViewBtn:hover {
     background: #FDF2F5;
     color: %(primary)s;
 }
+QPushButton#dbViewBtn:pressed {
+    background: #F4DFE5;
+    border-color: %(primary_dark)s;
+    padding-top: 7px;
+    padding-bottom: 5px;
+}
 QFrame#resultSubCard {
     background: #FFFFFF;
     border: 1.2px solid #E4CAD0;
@@ -536,6 +661,17 @@ QPushButton#subActionBtn:hover {
     border-color: %(primary)s;
     color: %(primary_dark)s;
     background: #FDF2F5;
+}
+QPushButton#subActionBtn:pressed {
+    background: #F4DFE5;
+    border-color: %(primary_dark)s;
+    padding-top: 5px;
+    padding-bottom: 3px;
+}
+QPushButton#subActionBtn:disabled {
+    background: #FAF5F3;
+    color: %(text_disabled)s;
+    border-color: #EADCD8;
 }
 
 /* ---------- 文本域（概览 / 自测输出） ---------- */
@@ -1258,6 +1394,7 @@ class DropSlot(QFrame):
         self.setProperty('dragOver', False)
         self.setProperty('ready', False)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor)
         self.paths = ()
         self.multiple = multiple
         self._hint = hint
@@ -1285,6 +1422,7 @@ class DropSlot(QFrame):
         layout.addWidget(self.path_label)
 
         self.choose_btn = QPushButton('选择文件…')
+        self.choose_btn.setCursor(Qt.PointingHandCursor)
         self.choose_btn.setIcon(ActionIcon.get('document', TOKENS['colors']['primary_dark']))
         self.choose_btn.setIconSize(QSize(16, 16))
         self.choose_btn.clicked.connect(self._on_click)
@@ -1292,6 +1430,7 @@ class DropSlot(QFrame):
         buttons.addWidget(self.choose_btn)
         if multiple:
             self.manage_btn = QPushButton('管理…')
+            self.manage_btn.setCursor(Qt.PointingHandCursor)
             self.manage_btn.setIcon(ActionIcon.get('tools', TOKENS['colors']['text']))
             self.manage_btn.setIconSize(QSize(16, 16))
             self.manage_btn.clicked.connect(self._manage)
@@ -1511,7 +1650,8 @@ class ResultSlot(QFrame):
         d_layout = QHBoxLayout(self.detail_card)
         d_layout.setContentsMargins(6, 4, 6, 4)
         d_layout.setSpacing(6)
-        self.detail_icon = QLabel('📄')
+        self.detail_icon = QLabel()
+        self.detail_icon.setPixmap(ActionIcon.get('document', TOKENS['colors']['primary']).pixmap(16, 16))
         d_layout.addWidget(self.detail_icon)
         self.detail_label = QLabel('明细表（回填版）：未就绪')
         self.detail_label.setStyleSheet('font-size:12px; font-weight:500;')
@@ -1519,6 +1659,7 @@ class ResultSlot(QFrame):
 
         self.btn_open_detail = QPushButton('打开明细')
         self.btn_open_detail.setObjectName('subActionBtn')
+        self.btn_open_detail.setCursor(Qt.PointingHandCursor)
         self.btn_open_detail.setIcon(ActionIcon.get('document', TOKENS['colors']['primary_dark']))
         self.btn_open_detail.setIconSize(QSize(16, 16))
         self.btn_open_detail.setEnabled(False)
@@ -1527,6 +1668,7 @@ class ResultSlot(QFrame):
 
         self.btn_save_detail = QPushButton('另存结果…')
         self.btn_save_detail.setObjectName('subActionBtn')
+        self.btn_save_detail.setCursor(Qt.PointingHandCursor)
         self.btn_save_detail.setIcon(ActionIcon.get('save', TOKENS['colors']['primary_dark']))
         self.btn_save_detail.setIconSize(QSize(16, 16))
         self.btn_save_detail.setEnabled(False)
@@ -1540,7 +1682,8 @@ class ResultSlot(QFrame):
         s_layout = QHBoxLayout(self.summary_card)
         s_layout.setContentsMargins(6, 4, 6, 4)
         s_layout.setSpacing(6)
-        self.summary_icon = QLabel('📊')
+        self.summary_icon = QLabel()
+        self.summary_icon.setPixmap(ActionIcon.get('chart', TOKENS['colors']['primary']).pixmap(16, 16))
         s_layout.addWidget(self.summary_icon)
         self.summary_label = QLabel('终稿汇总表：未就绪')
         self.summary_label.setStyleSheet('font-size:12px; font-weight:500;')
@@ -1548,6 +1691,7 @@ class ResultSlot(QFrame):
 
         self.btn_open_summary = QPushButton('打开终稿')
         self.btn_open_summary.setObjectName('subActionBtn')
+        self.btn_open_summary.setCursor(Qt.PointingHandCursor)
         self.btn_open_summary.setIcon(ActionIcon.get('chart', TOKENS['colors']['primary_dark']))
         self.btn_open_summary.setIconSize(QSize(16, 16))
         self.btn_open_summary.setEnabled(False)
@@ -1556,6 +1700,7 @@ class ResultSlot(QFrame):
 
         self.btn_save_summary = QPushButton('另存终稿…')
         self.btn_save_summary.setObjectName('subActionBtn')
+        self.btn_save_summary.setCursor(Qt.PointingHandCursor)
         self.btn_save_summary.setIcon(ActionIcon.get('save', TOKENS['colors']['primary_dark']))
         self.btn_save_summary.setIconSize(QSize(16, 16))
         self.btn_save_summary.setEnabled(False)
@@ -1566,6 +1711,7 @@ class ResultSlot(QFrame):
         # 底部操作行
         bottom_row = QHBoxLayout()
         self.open_dir_btn = QPushButton('打开所在目录')
+        self.open_dir_btn.setCursor(Qt.PointingHandCursor)
         self.open_dir_btn.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
         self.open_dir_btn.setIconSize(QSize(16, 16))
         self.open_dir_btn.setEnabled(False)
@@ -1609,7 +1755,10 @@ class ResultSlot(QFrame):
             except Exception:
                 sz = ''
             self.state_label.setText(f'🎉 已生成 · {base_name}  ({sz})')
-            self.detail_label.setText(f'明细表：{base_name} ({sz})')
+            fm = self.detail_label.fontMetrics()
+            avail_w = max(140, self.detail_label.width() or 200)
+            elided_name = fm.elidedText(base_name, Qt.ElideMiddle, avail_w)
+            self.detail_label.setText(f'明细表：{elided_name} ({sz})' if sz else f'明细表：{elided_name}')
             self.detail_label.setToolTip(self._detail_path)
             self.setProperty('celebration', True)
             self.status_pill.setText('🎉 双表已就绪' if has_summary else '🎉 明细表已就绪')
@@ -1625,7 +1774,10 @@ class ResultSlot(QFrame):
                 s_sz = _format_file_size(os.path.getsize(self._summary_path))
             except Exception:
                 s_sz = ''
-            self.summary_label.setText(f'终稿表：{s_name} ({s_sz})')
+            fm_s = self.summary_label.fontMetrics()
+            avail_ws = max(140, self.summary_label.width() or 200)
+            elided_sname = fm_s.elidedText(s_name, Qt.ElideMiddle, avail_ws)
+            self.summary_label.setText(f'终稿表：{elided_sname} ({s_sz})' if s_sz else f'终稿表：{elided_sname}')
             self.summary_label.setToolTip(self._summary_path)
         else:
             self.summary_label.setText('执行情况终稿（内置模板填写）：待计算')
@@ -1706,8 +1858,8 @@ class DatabaseHistoryDialog(QDialog):
         b_layout.setContentsMargins(14, 12, 14, 12)
         b_layout.setSpacing(12)
 
-        bear_ico = QLabel('🍓')
-        bear_ico.setStyleSheet('font-size: 32px;')
+        bear_ico = QLabel()
+        bear_ico.setPixmap(AttendanceIcon.pixmap(32, target_widget=self))
         b_layout.addWidget(bear_ico)
 
         b_text = QVBoxLayout()
@@ -1781,7 +1933,7 @@ class DatabaseHistoryDialog(QDialog):
         count = stats.get('run_count', 0)
         mb = stats.get('total_physical_mb', 0.0)
         max_mb = stats.get('max_size_mb', 50.0)
-        self.stats_label.setText(f'⚡ 累计计算: {count} 次  |  💾 磁盘占用: {mb:.2f} MB / {max_mb:.1f} MB')
+        self.stats_label.setText(f'累计计算: {count} 次  |  磁盘占用: {mb:.2f} MB / {max_mb:.1f} MB')
 
         self._runs_data = self.storage.query_runs(limit=200)
         model = QStandardItemModel(len(self._runs_data), 8, self)
@@ -2103,7 +2255,7 @@ class EmptyStateCard(QFrame):
         root_layout.addLayout(steps_layout)
 
         # Bottom tip
-        tip_lbl = QLabel('💡 提示：支持将 Excel 文件直接拖拽至左侧虚线框；计算完成后在此处自动生成结构化统计报告。')
+        tip_lbl = QLabel('提示：支持将 Excel 文件直接拖拽至上方对应卡片；计算完成后在此处自动生成结构化统计报告。')
         tip_lbl.setObjectName('emptyTipText')
         tip_lbl.setWordWrap(True)
         root_layout.addWidget(tip_lbl)
@@ -2338,7 +2490,7 @@ class MainWindow(QMainWindow):
         c_layout.setSpacing(6)
 
         c_top = QHBoxLayout()
-        c_badge = QLabel('🍓 离线计算数据库')
+        c_badge = QLabel('离线计算数据库')
         c_badge.setStyleSheet('font-size:12px; font-weight:600; color:#781236;')
         c_top.addWidget(c_badge)
         c_top.addStretch(1)
@@ -2355,10 +2507,11 @@ class MainWindow(QMainWindow):
         c_mid.addWidget(self.calc_count_val)
         c_layout.addLayout(c_mid)
 
-        self.btn_open_db = QPushButton('🗄️ 查看数据库记录…')
+        self.btn_open_db = QPushButton('查看数据库记录…')
         self.btn_open_db.setObjectName('dbViewBtn')
         self.btn_open_db.setIcon(ActionIcon.get('database', TOKENS['colors']['primary_dark']))
         self.btn_open_db.setIconSize(QSize(15, 15))
+        self.btn_open_db.setCursor(Qt.PointingHandCursor)
         self.btn_open_db.clicked.connect(self._open_database_viewer)
         c_layout.addWidget(self.btn_open_db)
         form.addRow(self.calc_stats_card)
@@ -2412,6 +2565,7 @@ class MainWindow(QMainWindow):
 
         self.run_btn = QPushButton('开始计算')
         self.run_btn.setObjectName('primaryButton')
+        self.run_btn.setCursor(Qt.PointingHandCursor)
         self.run_btn.setIcon(ActionIcon.get('compute', '#FFFFFF'))
         self.run_btn.setIconSize(QSize(18, 18))
         self.run_btn.setMinimumHeight(48)
@@ -2428,6 +2582,7 @@ class MainWindow(QMainWindow):
     def _build_tabs(self):
         self.tabs = QTabWidget()
         self.tabs.setObjectName('workspaceTabs')
+        self.workspace_tabs = self.tabs
         self.tabs.setUsesScrollButtons(True)
 
         overview = QWidget()
@@ -2459,6 +2614,18 @@ class MainWindow(QMainWindow):
         self.dict_tabs = QTabWidget()
         self.tabs.addTab(self.dict_tabs, ActionIcon.get('dictionary', TOKENS['colors']['primary_dark']), '词典编辑')
 
+        self._tab_kinds = ['dashboard', 'document', 'percent', 'dictionary']
+        def _on_workspace_tab_changed(index: int):
+            for i in range(self.tabs.count()):
+                if i < len(self._tab_kinds):
+                    kind = self._tab_kinds[i]
+                    if i == index:
+                        self.tabs.setTabIcon(i, ActionIcon.get(kind, '#FFFFFF'))
+                    else:
+                        self.tabs.setTabIcon(i, ActionIcon.get(kind, TOKENS['colors']['primary']))
+        self.tabs.currentChanged.connect(_on_workspace_tab_changed)
+        _on_workspace_tab_changed(self.tabs.currentIndex())
+
         # 更多工具按钮：作为顶部导航栏常驻角标按钮，位于「词典编辑」之后，华丽大气可爱
         tools_container = QWidget()
         tools_layout = QHBoxLayout(tools_container)
@@ -2466,6 +2633,7 @@ class MainWindow(QMainWindow):
         tools_layout.setSpacing(6)
         self.tools_button = QPushButton('更多工具…')
         self.tools_button.setObjectName('toolsBtn')
+        self.tools_button.setCursor(Qt.PointingHandCursor)
         self.tools_button.setIcon(ActionIcon.get('tools', TOKENS['colors']['primary_dark']))
         self.tools_button.setIconSize(QSize(16, 16))
         self.tools_button.setToolTip('打开辅助工具箱：教室明细、异常清单、低出勤率复核、合成数据自测与可选设置')
@@ -3285,15 +3453,12 @@ class MainWindow(QMainWindow):
             self.dict_tabs.addTab(table, name)
             self.dict_tables[name] = table
 
-        bar = QWidget()
-        layout = QHBoxLayout(bar)
-        layout.addStretch(1)
-        save_btn = QPushButton('保存词典')
-        save_btn.setIcon(ActionIcon.get('save_disk', TOKENS['colors']['primary_dark']))
-        save_btn.setIconSize(QSize(16, 16))
-        save_btn.clicked.connect(self._save_dictionary)
-        layout.addWidget(save_btn)
-        self.dict_tabs.addTab(bar, '▾')
+        self.btn_save_dict = QPushButton('保存词典')
+        self.btn_save_dict.setCursor(Qt.PointingHandCursor)
+        self.btn_save_dict.setIcon(ActionIcon.get('save_disk', TOKENS['colors']['primary_dark']))
+        self.btn_save_dict.setIconSize(QSize(16, 16))
+        self.btn_save_dict.clicked.connect(self._save_dictionary)
+        self.dict_tabs.setCornerWidget(self.btn_save_dict, Qt.TopRightCorner)
 
     def _save_dictionary(self):
         raw_path = self.dict_edit.text().strip() or default_dictionary_path()
