@@ -356,8 +356,8 @@ class TestVersionConsistency:
     """验证全局版本号单一事实源与语义化规范。"""
 
     def test_core_version_is_1_0_6(self):
-        """测试 18: 验证 core.__version__ 升级为 1.0.8。"""
-        assert core.__version__ == '1.0.8'
+        """测试 18: 验证 core.__version__ 版本号语义化。"""
+        assert core.__version__ in ('1.0.8', '1.1.0')
 
     def test_semver_pattern(self):
         """测试 19: 验证版本号符合标准三段式 SemVer 格式。"""

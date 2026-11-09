@@ -509,6 +509,7 @@ QFrame#dropSlot[dragOver="true"] { background:%(primary_light)s; border:2px soli
 QFrame#dropSlot[dragOver="true"] QLabel#slotPath { color:%(primary)s; font-weight:bold; }
 QFrame#dropSlot[dragReject="true"] { background:#FFF2F2; border:2px solid #FFAAA6; }
 QFrame#dropSlot[dragReject="true"] QLabel#slotPath { color:%(danger)s; font-weight:bold; }
+QFrame#dropSlot[justDropped="true"] { background:%(primary_light)s; border:2px solid %(primary)s; }
 QLabel#slotBadge { color:#FFFFFF; font-weight:bold; border-radius:8px; padding:3px 11px;
                    background:%(primary)s; }
 QLabel#slotTitle { font-size:16px; font-weight:bold; color:%(text_strong)s; }
@@ -1019,6 +1020,46 @@ class ToastNotification(QFrame):
             self._timer.stop()
         self.deleteLater()
         super().closeEvent(event)
+
+
+class CuteBearAvatar(QLabel):
+    """可爱的草莓小熊互动头像：支持悬停提示、点击俏皮彩蛋弹窗与微交互反馈。"""
+
+    CUTE_TIPS = (
+        "🍓 今天又是认真统计出勤的一天！每一条免勤都已精准归档~",
+        "✨ 摸摸小熊头，出勤不用愁~ 本地 SQLite 毫秒级运算中！",
+        "🔒 100% 纯本地离线隐私守护，绝无任何个人数据上传云端！",
+        "🍃 50MB 磁盘配额自愈清理，硬盘轻量零负担~",
+        "🚀 早自习、晚自习一键自动识别，回填表与终稿汇总表秒出！",
+        "🐻 桂工学子专属出勤管家已就绪，今天也元气满满哦~",
+        "💡 温馨提示：支持多份免勤名单同时拖入，系统自动智能去重！",
+        "🎯 终稿汇总表格式严格对齐 15 个学院官方规范，直接可用！",
+    )
+
+    def __init__(self, size: int = 66, parent=None):
+        super().__init__(parent)
+        self._size = size
+        self.setFixedSize(size, size)
+        self.setAlignment(Qt.AlignCenter)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip('点击草莓小熊有彩蛋哦~ 🍓')
+        self._update_pixmap(size)
+
+    def _update_pixmap(self, size: int):
+        self.setPixmap(AttendanceIcon.pixmap(size, target_widget=self))
+
+    def enterEvent(self, event):
+        self.setToolTip('点击草莓小熊有彩蛋哦~ 🍓')
+        super().enterEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            import random
+            tip = random.choice(self.CUTE_TIPS)
+            top_win = self.window()
+            if top_win:
+                ToastNotification(top_win, tip, kind='success', duration=3200)
+        super().mousePressEvent(event)
 
 
 class MetricCard(QFrame):
@@ -1594,10 +1635,20 @@ class DropSlot(QFrame):
 
         self.set_path(path)
         self.picked.emit(path)
+        self._trigger_pulse()
         if hasattr(top_win, '_active_toasts'):
             msg = '免勤统计表已添加' if self.multiple else '考勤明细表解析就绪'
             ToastNotification(top_win, msg, kind='success')
         event.acceptProposedAction()
+
+    def _trigger_pulse(self):
+        """轻柔的成功装填脉冲反馈。"""
+        self.setProperty('justDropped', True)
+        self._repolish()
+        QTimer.singleShot(450, lambda: [
+            self.setProperty('justDropped', False),
+            self._repolish()
+        ])
 
 
 class ResultSlot(QFrame):
@@ -1796,6 +1847,17 @@ class ResultSlot(QFrame):
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
         self.update()
+
+    def celebrate(self):
+        """触发计算成功的喜悦微光微动效。"""
+        self.setProperty('celebration', True)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        QTimer.singleShot(2500, lambda: [
+            self.setProperty('celebration', False),
+            self.style().unpolish(self),
+            self.style().polish(self)
+        ])
 
     def _open_file(self, target_path: str):
         if not target_path or not os.path.exists(target_path):
@@ -2207,9 +2269,8 @@ class EmptyStateCard(QFrame):
         header = QHBoxLayout()
         header.setSpacing(16)
 
-        mascot_lbl = QLabel()
+        mascot_lbl = CuteBearAvatar(56, self)
         mascot_lbl.setObjectName('emptyMascot')
-        mascot_lbl.setPixmap(AttendanceIcon.pixmap(56, target_widget=self))
         header.addWidget(mascot_lbl)
 
         header_text = QVBoxLayout()
@@ -2371,10 +2432,7 @@ class MainWindow(QMainWindow):
 
         header = QHBoxLayout()
         header.setSpacing(12)
-        avatar = QLabel()
-        avatar.setPixmap(AttendanceIcon.pixmap(66, target_widget=self))
-        avatar.setFixedSize(66, 66)
-        avatar.setAlignment(Qt.AlignCenter)
+        avatar = CuteBearAvatar(66, self)
         header.addWidget(avatar)
         divider = QFrame()
         divider.setObjectName('brandDivider')
@@ -2514,6 +2572,9 @@ class MainWindow(QMainWindow):
         self.btn_open_db.setCursor(Qt.PointingHandCursor)
         self.btn_open_db.clicked.connect(self._open_database_viewer)
         c_layout.addWidget(self.btn_open_db)
+        self.calc_stats_card.setCursor(Qt.PointingHandCursor)
+        self.calc_stats_card.setToolTip('点击查看数据库健康状态与历史记录~ ✨')
+        self.calc_stats_card.mousePressEvent = self._on_db_card_clicked
         form.addRow(self.calc_stats_card)
 
         # 智能识别周次（紧凑呈现，兼顾已有测试）
@@ -2578,6 +2639,10 @@ class MainWindow(QMainWindow):
     def _open_database_viewer(self):
         dlg = DatabaseHistoryDialog(self, storage=self.storage)
         dlg.exec_()
+
+    def _on_db_card_clicked(self, event):
+        count_num = self.storage.get_run_count() if hasattr(self, 'storage') and self.storage else 0
+        ToastNotification(self, f"🍃 已累计在本地安全计算 {count_num} 次，SQLite 数据库健康运行中！", kind='success', duration=2800)
 
     def _build_tabs(self):
         self.tabs = QTabWidget()
@@ -3187,6 +3252,8 @@ class MainWindow(QMainWindow):
         self._render(result)
         summary_path = getattr(result, 'summary_output_path', '')
         self.result_slot.set_result(result.output_path, result.input_paths, summary_path=summary_path)
+        if hasattr(self.result_slot, 'celebrate'):
+            self.result_slot.celebrate()
         if hasattr(self, 'calc_count_val') and hasattr(self, 'storage') and self.storage:
             try:
                 self.calc_count_val.setText(f"{self.storage.get_run_count()} 次")

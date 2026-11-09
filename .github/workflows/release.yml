@@ -42,16 +42,16 @@ jobs:
           Copy-Item "免勤词典.xlsx" -Destination "release_win\"
           Copy-Item "使用说明.md" -Destination "release_win\"
           Copy-Item "README.md" -Destination "release_win\"
-          Compress-Archive -Path "release_win\*" -DestinationPath "三早一晚自动统计_Windows便携版.zip"
-          Get-FileHash "三早一晚自动统计_Windows便携版.zip" -Algorithm SHA256 > "三早一晚自动统计_Windows便携版.zip.sha256"
+          Compress-Archive -Path "release_win\*" -DestinationPath "AttendanceStats-Windows-Portable.zip"
+          Get-FileHash "AttendanceStats-Windows-Portable.zip" -Algorithm SHA256 > "AttendanceStats-Windows-Portable.zip.sha256"
 
       - name: Upload Windows Artifact
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
           path: |
-            三早一晚自动统计_Windows便携版.zip
-            三早一晚自动统计_Windows便携版.zip.sha256
+            AttendanceStats-Windows-Portable.zip
+            AttendanceStats-Windows-Portable.zip.sha256
 
   build-macos:
     name: Build macOS Release
@@ -82,16 +82,16 @@ jobs:
           cp 免勤词典.xlsx release_mac/
           cp 使用说明.md release_mac/
           cp README.md release_mac/
-          tar -czf 三早一晚自动统计_macOS版.tar.gz -C release_mac .
-          shasum -a 256 三早一晚自动统计_macOS版.tar.gz > 三早一晚自动统计_macOS版.tar.gz.sha256
+          tar -czf AttendanceStats-macOS-Portable.tar.gz -C release_mac .
+          shasum -a 256 AttendanceStats-macOS-Portable.tar.gz > AttendanceStats-macOS-Portable.tar.gz.sha256
 
       - name: Upload macOS Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-release
           path: |
-            三早一晚自动统计_macOS版.tar.gz
-            三早一晚自动统计_macOS版.tar.gz.sha256
+            AttendanceStats-macOS-Portable.tar.gz
+            AttendanceStats-macOS-Portable.tar.gz.sha256
 
   build-linux-huawei:
     name: Build Linux / 华为 openEuler Release
@@ -124,16 +124,16 @@ jobs:
           cp 免勤词典.xlsx release_linux/
           cp 使用说明.md release_linux/
           cp README.md release_linux/
-          tar -czf 三早一晚自动统计_Linux_华为openEuler版.tar.gz -C release_linux .
-          sha256sum 三早一晚自动统计_Linux_华为openEuler版.tar.gz > 三早一晚自动统计_Linux_华为openEuler版.tar.gz.sha256
+          tar -czf AttendanceStats-Linux-openEuler.tar.gz -C release_linux .
+          sha256sum AttendanceStats-Linux-openEuler.tar.gz > AttendanceStats-Linux-openEuler.tar.gz.sha256
 
       - name: Upload Linux Artifact
         uses: actions/upload-artifact@v4
         with:
           name: linux-huawei-release
           path: |
-            三早一晚自动统计_Linux_华为openEuler版.tar.gz
-            三早一晚自动统计_Linux_华为openEuler版.tar.gz.sha256
+            AttendanceStats-Linux-openEuler.tar.gz
+            AttendanceStats-Linux-openEuler.tar.gz.sha256
 
   publish-release:
     name: Create GitHub Release
@@ -153,11 +153,11 @@ jobs:
         run: |
           mkdir -p release-assets
           find all-artifacts -type f -exec cp {} release-assets/ \;
-          git archive --format=zip --output=release-assets/三早一晚自动统计_Source源码包.zip HEAD
-          git archive --format=tar.gz --output=release-assets/三早一晚自动统计_Source源码包.tar.gz HEAD
+          git archive --format=zip --output=release-assets/AttendanceStats-Source.zip HEAD
+          git archive --format=tar.gz --output=release-assets/AttendanceStats-Source.tar.gz HEAD
           cd release-assets
-          sha256sum 三早一晚自动统计_Source源码包.zip > 三早一晚自动统计_Source源码包.zip.sha256
-          sha256sum 三早一晚自动统计_Source源码包.tar.gz > 三早一晚自动统计_Source源码包.tar.gz.sha256
+          sha256sum AttendanceStats-Source.zip > AttendanceStats-Source.zip.sha256
+          sha256sum AttendanceStats-Source.tar.gz > AttendanceStats-Source.tar.gz.sha256
           ls -la
 
       - name: Create or Update GitHub Release
@@ -167,12 +167,13 @@ jobs:
           cat << 'EOF' > release_notes.md
           ## 🎉 三早一晚免勤自动统计系统发布包
 
-          本版本已升级为豪华大气可爱的「草莓小熊」视觉设计，纯本地离线 SQLite 数据库存管与 50MB 配额守护，支持自动填好回填明细表与内置标准终稿汇总表。
+          本版本已升级为豪华大气可爱的「草莓小熊」视觉设计与趣味互动引擎，纯本地离线 SQLite 数据库存管与 50MB 配额守护，支持自动填好回填明细表与内置标准终稿汇总表。
 
-          ### 📦 多系统分发文件
-          - **Windows**: `三早一晚自动统计_Windows便携版.zip`（解压即用，无外部依赖）
-          - **macOS**: `三早一晚自动统计_macOS版.tar.gz`
-          - **Linux / 华为 openEuler / 统信 UOS**: `三早一晚自动统计_Linux_华为openEuler版.tar.gz`
+          ### 📦 多系统分发文件（标准纯英文命名，解压即用）
+          - **Windows**: `AttendanceStats-Windows-Portable.zip`（便携解压即用，无外部依赖）
+          - **macOS**: `AttendanceStats-macOS-Portable.tar.gz`
+          - **Linux / 华为 openEuler / 统信 UOS**: `AttendanceStats-Linux-openEuler.tar.gz`
+          - **Source 源码包**: `AttendanceStats-Source.zip` / `AttendanceStats-Source.tar.gz`
           - 各系统压缩包均附带独立的 `.sha256` 校验和文件。
 
           ### 🔒 核心特性
