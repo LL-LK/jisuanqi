@@ -24,7 +24,7 @@ from PySide6.QtCore import (QAbstractTableModel, QEvent, QModelIndex, QObject, Q
                             QRectF, QSettings, QSize, QThread, QTimer, QUrl, Qt, Signal)
 from PySide6.QtGui import (QAction, QBrush, QColor, QDesktopServices, QDragEnterEvent, QDropEvent, QFont,
                            QGuiApplication, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
-                           QPixmap, QShortcut)
+                           QPixmap, QShortcut, QStandardItemModel, QStandardItem)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox,
                                QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow,
@@ -275,6 +275,40 @@ class ActionIcon:
                 p.setPen(QPen(dot_color, 2.2, Qt.SolidLine, Qt.RoundCap))
                 p.drawLine(QPointF(0, -6), QPointF(0, -9))
                 p.restore()
+        elif kind in ('dashboard', 'overview'):
+            p.drawRoundedRect(QRectF(3, 3, 7.5, 7.5), 2, 2)
+            p.drawRoundedRect(QRectF(13.5, 3, 7.5, 5), 2, 2)
+            p.drawRoundedRect(QRectF(13.5, 10.5, 7.5, 10.5), 2, 2)
+            p.drawRoundedRect(QRectF(3, 13.5, 7.5, 7.5), 2, 2)
+        elif kind in ('percent', 'rate'):
+            p.drawEllipse(QRectF(5, 5, 4.5, 4.5))
+            p.drawEllipse(QRectF(14.5, 14.5, 4.5, 4.5))
+            p.drawLine(QPointF(18, 5), QPointF(6, 19))
+        elif kind in ('dictionary', 'book'):
+            path = QPainterPath()
+            path.moveTo(4, 5)
+            path.lineTo(11, 4)
+            path.lineTo(11, 20)
+            path.lineTo(4, 19)
+            path.closeSubpath()
+            path.moveTo(20, 5)
+            path.lineTo(13, 4)
+            path.lineTo(13, 20)
+            path.lineTo(20, 19)
+            path.closeSubpath()
+            p.drawPath(path)
+        elif kind in ('database', 'db'):
+            p.drawEllipse(QRectF(4, 4, 16, 5))
+            p.drawArc(QRectF(4, 9, 16, 5), 180 * 16, 180 * 16)
+            p.drawArc(QRectF(4, 15, 16, 5), 180 * 16, 180 * 16)
+            p.drawLine(QPointF(4, 6.5), QPointF(4, 17.5))
+            p.drawLine(QPointF(20, 6.5), QPointF(20, 17.5))
+        elif kind in ('chart', 'chart_bar'):
+            p.drawLine(QPointF(3, 20), QPointF(21, 20))
+            p.drawLine(QPointF(3, 4), QPointF(3, 20))
+            p.drawRect(QRectF(5.5, 12, 3.5, 8))
+            p.drawRect(QRectF(10.5, 8, 3.5, 12))
+            p.drawRect(QRectF(15.5, 5, 3.5, 15))
         p.end()
         return px
 
@@ -431,9 +465,78 @@ QTabBar::tab:hover { color:%(primary_dark)s; background:#F9EDF0; }
 QTabBar::tab:selected { background:%(card)s; color:%(primary_dark)s; font-weight:bold;
                          border-bottom:2.5px solid %(primary)s; }
 QTabBar::tab:disabled { color:#8C767C; }
-QTabWidget#workspaceTabs > QTabBar::tab { border:0; border-radius:7px; margin:0 4px 6px 0;
-                                       padding:8px 18px; }
-QTabWidget#workspaceTabs > QTabBar::tab:selected { background:%(primary)s; color:#FFFFFF; }
+QTabWidget#workspaceTabs > QTabBar::tab {
+    background: #FFFFFF;
+    color: %(primary_dark)s;
+    border: 1.5px solid #8B1E3F;
+    border-radius: 14px;
+    margin: 0 8px 6px 0;
+    padding: 6px 18px;
+    font-weight: 600;
+    font-size: 13px;
+}
+QTabWidget#workspaceTabs > QTabBar::tab:hover {
+    border-color: %(primary_dark)s;
+    color: %(primary_dark)s;
+    background: #FFF0F3;
+}
+QTabWidget#workspaceTabs > QTabBar::tab:selected {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 %(primary)s, stop:1 %(primary_dark)s);
+    color: #FFFFFF;
+    border: 1.5px solid %(primary_dark)s;
+    font-weight: bold;
+}
+
+/* ---------- 豪华大气可爱：本地计算与双表结果卡片 ---------- */
+QFrame#calcStatsCard {
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #FFF8FA, stop:1 #FFF2F5);
+    border: 1.5px solid #E4B8C3;
+    border-radius: 10px;
+    padding: 10px 12px;
+}
+QLabel#calcCountNumber {
+    font-size: 24px;
+    font-weight: bold;
+    color: %(primary_dark)s;
+}
+QPushButton#dbViewBtn {
+    background: #FFFFFF;
+    color: %(primary_dark)s;
+    border: 1.5px solid #C7ADAF;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-weight: 600;
+    font-size: 13px;
+}
+QPushButton#dbViewBtn:hover {
+    border-color: %(primary)s;
+    background: #FDF2F5;
+    color: %(primary)s;
+}
+QFrame#resultSubCard {
+    background: #FFFFFF;
+    border: 1.2px solid #E4CAD0;
+    border-radius: 8px;
+    padding: 4px 8px;
+}
+QFrame#resultSubCard:hover {
+    border-color: %(primary)s;
+    background: #FFFDFE;
+}
+QPushButton#subActionBtn {
+    background: #FFFCFA;
+    color: %(text)s;
+    border: 1px solid #C7ADAF;
+    border-radius: 7px;
+    padding: 4px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QPushButton#subActionBtn:hover {
+    border-color: %(primary)s;
+    color: %(primary_dark)s;
+    background: #FDF2F5;
+}
 
 /* ---------- 文本域（概览 / 自测输出） ---------- */
 QPlainTextEdit { background:%(card)s; color:%(text)s; border:1.5px solid %(border)s;
@@ -1359,108 +1462,402 @@ class DropSlot(QFrame):
 
 
 class ResultSlot(QFrame):
-    """「下载结果」槽位：显示产物文件名，提供另存为与打开目录。"""
+    """「查看与下载结果」槽位：豪华大气可爱双卡片，清晰区分明细表与终稿汇总表。"""
 
     def __init__(self, selected_paths=lambda: ()):
         super().__init__()
         self.setFrameShape(QFrame.StyledPanel)
         self.setObjectName('dropSlot')
         self.setProperty('ready', False)
+        self.setProperty('celebration', False)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self._path = ''
+        self._detail_path = ''
+        self._summary_path = ''
         self._input_paths = ()
         self._selected_paths = selected_paths
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 11, 14, 11)
-        layout.setSpacing(7)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(6)
 
+        # 头部标题
         head = QHBoxLayout()
         head.setSpacing(8)
         self.badge = QLabel('03')
         self.badge.setObjectName('slotBadge')
         head.addWidget(self.badge)
-        self.title_label = QLabel('结果工作簿')
+        self.title_label = QLabel('计算结果工作簿')
         self.title_label.setObjectName('slotTitle')
         head.addWidget(self.title_label, 1)
+
+        self.status_pill = QLabel('待计算')
+        self.status_pill.setObjectName('localBadge')
+        head.addWidget(self.status_pill)
         layout.addLayout(head)
 
+        # 状态总览
         self.state_label = QLabel('完成计算后可另存或打开目录')
         self.state_label.setObjectName('slotPath')
         self.state_label.setWordWrap(True)
         self.state_label.setTextFormat(Qt.PlainText)
         self.state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
-        self.state_label.setFixedHeight(38)
+        self.state_label.setFixedHeight(30)
         layout.addWidget(self.state_label)
 
-        row = QHBoxLayout()
-        self.save_btn = QPushButton('另存结果…')
-        self.save_btn.setIcon(ActionIcon.get('save', TOKENS['colors']['primary_dark']))
-        self.save_btn.setIconSize(QSize(16, 16))
-        self.save_btn.setEnabled(False)
-        self.save_btn.clicked.connect(self._save_as)
-        self.open_btn = QPushButton('打开所在目录')
-        self.open_btn.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
-        self.open_btn.setIconSize(QSize(16, 16))
-        self.open_btn.setEnabled(False)
-        self.open_btn.clicked.connect(self._open_dir)
-        row.addWidget(self.save_btn)
-        row.addWidget(self.open_btn)
-        row.addStretch(1)
-        layout.addLayout(row)
+        # 产物 1：考勤明细表（回填完整版）
+        self.detail_card = QFrame()
+        self.detail_card.setObjectName('resultSubCard')
+        d_layout = QHBoxLayout(self.detail_card)
+        d_layout.setContentsMargins(6, 4, 6, 4)
+        d_layout.setSpacing(6)
+        self.detail_icon = QLabel('📄')
+        d_layout.addWidget(self.detail_icon)
+        self.detail_label = QLabel('明细表（回填版）：未就绪')
+        self.detail_label.setStyleSheet('font-size:12px; font-weight:500;')
+        d_layout.addWidget(self.detail_label, 1)
+
+        self.btn_open_detail = QPushButton('打开明细')
+        self.btn_open_detail.setObjectName('subActionBtn')
+        self.btn_open_detail.setIcon(ActionIcon.get('document', TOKENS['colors']['primary_dark']))
+        self.btn_open_detail.setIconSize(QSize(16, 16))
+        self.btn_open_detail.setEnabled(False)
+        self.btn_open_detail.clicked.connect(lambda: self._open_file(self._detail_path))
+        d_layout.addWidget(self.btn_open_detail)
+
+        self.btn_save_detail = QPushButton('另存结果…')
+        self.btn_save_detail.setObjectName('subActionBtn')
+        self.btn_save_detail.setIcon(ActionIcon.get('save', TOKENS['colors']['primary_dark']))
+        self.btn_save_detail.setIconSize(QSize(16, 16))
+        self.btn_save_detail.setEnabled(False)
+        self.btn_save_detail.clicked.connect(lambda: self._save_file(self._detail_path, '考勤明细表'))
+        d_layout.addWidget(self.btn_save_detail)
+        layout.addWidget(self.detail_card)
+
+        # 产物 2：执行情况终稿（内置模板生成）
+        self.summary_card = QFrame()
+        self.summary_card.setObjectName('resultSubCard')
+        s_layout = QHBoxLayout(self.summary_card)
+        s_layout.setContentsMargins(6, 4, 6, 4)
+        s_layout.setSpacing(6)
+        self.summary_icon = QLabel('📊')
+        s_layout.addWidget(self.summary_icon)
+        self.summary_label = QLabel('终稿汇总表：未就绪')
+        self.summary_label.setStyleSheet('font-size:12px; font-weight:500;')
+        s_layout.addWidget(self.summary_label, 1)
+
+        self.btn_open_summary = QPushButton('打开终稿')
+        self.btn_open_summary.setObjectName('subActionBtn')
+        self.btn_open_summary.setIcon(ActionIcon.get('chart', TOKENS['colors']['primary_dark']))
+        self.btn_open_summary.setIconSize(QSize(16, 16))
+        self.btn_open_summary.setEnabled(False)
+        self.btn_open_summary.clicked.connect(lambda: self._open_file(self._summary_path))
+        s_layout.addWidget(self.btn_open_summary)
+
+        self.btn_save_summary = QPushButton('另存终稿…')
+        self.btn_save_summary.setObjectName('subActionBtn')
+        self.btn_save_summary.setIcon(ActionIcon.get('save', TOKENS['colors']['primary_dark']))
+        self.btn_save_summary.setIconSize(QSize(16, 16))
+        self.btn_save_summary.setEnabled(False)
+        self.btn_save_summary.clicked.connect(lambda: self._save_file(self._summary_path, '早晚自习执行情况终稿'))
+        s_layout.addWidget(self.btn_save_summary)
+        layout.addWidget(self.summary_card)
+
+        # 底部操作行
+        bottom_row = QHBoxLayout()
+        self.open_dir_btn = QPushButton('打开所在目录')
+        self.open_dir_btn.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
+        self.open_dir_btn.setIconSize(QSize(16, 16))
+        self.open_dir_btn.setEnabled(False)
+        self.open_dir_btn.clicked.connect(self._open_dir)
+        bottom_row.addWidget(self.open_dir_btn)
+        bottom_row.addStretch(1)
+        layout.addLayout(bottom_row)
+
+        # 保持旧属性与测试兼容别名
+        self.save_btn = self.btn_save_detail
+        self.open_btn = self.open_dir_btn
         self.setAccessibleName('下载填好的明细表')
 
-    def set_result(self, path: str, input_paths=()):
+    def set_result(self, path: str, input_paths=(), summary_path: str = ''):
         self._path = path or ''
+        self._detail_path = path or ''
         self._input_paths = input_paths
-        ready = bool(self._path)
+        if not summary_path and self._detail_path:
+            d_dir = os.path.dirname(os.path.abspath(self._detail_path))
+            if os.path.isdir(d_dir):
+                for f in os.listdir(d_dir):
+                    if f.endswith('.xlsx') and '终稿' in f:
+                        summary_path = os.path.join(d_dir, f)
+                        break
+        self._summary_path = summary_path or ''
+        self.set_results(self._detail_path, self._summary_path, input_paths=input_paths)
+
+    def set_results(self, detail_path: str, summary_path: str = '', input_paths=()):
+        self._detail_path = detail_path or ''
+        self._path = self._detail_path
+        self._summary_path = summary_path or ''
+        self._input_paths = input_paths
+
+        ready = bool(self._detail_path and os.path.exists(self._detail_path))
+        has_summary = bool(self._summary_path and os.path.exists(self._summary_path))
+
         if ready:
-            base_name = os.path.basename(self._path)
-            size_str = ''
-            if os.path.exists(self._path):
-                try:
-                    size_str = f'  ({_format_file_size(os.path.getsize(self._path))})'
-                except Exception:
-                    size_str = ''
-            self.state_label.setText(f'🎉 已生成 · {base_name}{size_str}')
+            base_name = os.path.basename(self._detail_path)
+            try:
+                sz = _format_file_size(os.path.getsize(self._detail_path))
+            except Exception:
+                sz = ''
+            self.state_label.setText(f'🎉 已生成 · {base_name}  ({sz})')
+            self.detail_label.setText(f'明细表：{base_name} ({sz})')
+            self.detail_label.setToolTip(self._detail_path)
             self.setProperty('celebration', True)
+            self.status_pill.setText('🎉 双表已就绪' if has_summary else '🎉 明细表已就绪')
         else:
             self.state_label.setText('完成计算后可另存或打开目录')
+            self.detail_label.setText('考勤明细表（回填完整版）：待计算')
             self.setProperty('celebration', False)
-        self.state_label.setToolTip(self._path)
+            self.status_pill.setText('待计算')
+
+        if has_summary:
+            s_name = os.path.basename(self._summary_path)
+            try:
+                s_sz = _format_file_size(os.path.getsize(self._summary_path))
+            except Exception:
+                s_sz = ''
+            self.summary_label.setText(f'终稿表：{s_name} ({s_sz})')
+            self.summary_label.setToolTip(self._summary_path)
+        else:
+            self.summary_label.setText('执行情况终稿（内置模板填写）：待计算')
+
         self.setProperty('ready', ready)
+        self.btn_open_detail.setEnabled(ready)
+        self.btn_save_detail.setEnabled(ready)
+        self.btn_open_summary.setEnabled(has_summary)
+        self.btn_save_summary.setEnabled(has_summary)
+        self.open_dir_btn.setEnabled(ready or has_summary)
         self.save_btn.setEnabled(ready)
-        self.open_btn.setEnabled(ready)
+        self.open_btn.setEnabled(ready or has_summary)
+
         self.style().unpolish(self)
         self.style().polish(self)
         self.state_label.style().unpolish(self.state_label)
         self.state_label.style().polish(self.state_label)
         self.update()
 
-    def _save_as(self):
-        if not self._path:
+    def _open_file(self, target_path: str):
+        if not target_path or not os.path.exists(target_path):
+            QMessageBox.information(self, '提示', '文件尚未生成或路径不存在。')
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(target_path))):
+            QMessageBox.warning(self, '提示', f'无法自动打开文件：{target_path}')
+
+    def _save_file(self, source_path: str, default_desc: str):
+        if not source_path or not os.path.exists(source_path):
+            QMessageBox.information(self, '提示', f'{default_desc}尚未生成。')
             return
         target, _ = QFileDialog.getSaveFileName(
-            self, '另存为', os.path.basename(self._path), 'Excel 文件 (*.xlsx)')
+            self, f'另存 {default_desc}', os.path.basename(source_path), 'Excel 文件 (*.xlsx)')
         if not target:
             return
         try:
             check_output_path(target, (*self._input_paths, *self._selected_paths()))
-            if not _same_path(target, self._path):
+            if not _same_path(target, source_path):
                 with atomic_output(target) as temporary:
-                    shutil.copyfile(self._path, temporary)
-        except Exception as exc:                      # noqa: BLE001
+                    shutil.copyfile(source_path, temporary)
+        except Exception as exc:
             QMessageBox.critical(self, '另存失败', str(exc))
             return
         self.state_label.setText('已另存 · %s' % os.path.basename(target))
         self.state_label.setToolTip(target)
 
+    def _save_as(self):
+        self._save_file(self._detail_path or self._path, '考勤明细表')
+
     def _open_dir(self):
-        if not self._path:
+        p = self._detail_path or self._summary_path or self._path
+        if not p:
             return
-        folder = os.path.dirname(os.path.abspath(self._path))
+        folder = os.path.dirname(os.path.abspath(p))
         if not QDesktopServices.openUrl(QUrl.fromLocalFile(folder)):
             QMessageBox.information(self, '提示', '无法自动打开目录：%s' % folder)
+
+
+class DatabaseHistoryDialog(QDialog):
+    """草莓小熊 · 本地计算历史数据库中心 (豪华大气可爱风格)"""
+
+    def __init__(self, parent=None, storage=None):
+        super().__init__(parent)
+        self.setWindowTitle('草莓小熊 · 本地计算数据库与历史归档')
+        self.resize(960, 620)
+        self.setAttribute(Qt.WA_DeleteOnClose, True)
+        self.setWindowIcon(QIcon(AttendanceIcon.pixmap(32, target_widget=self)))
+        from core.storage import AttendanceStorage
+        self.storage = storage or AttendanceStorage()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
+
+        # 顶部草莓小熊横幅卡片
+        banner = QFrame()
+        banner.setObjectName('calcStatsCard')
+        b_layout = QHBoxLayout(banner)
+        b_layout.setContentsMargins(14, 12, 14, 12)
+        b_layout.setSpacing(12)
+
+        bear_ico = QLabel('🍓')
+        bear_ico.setStyleSheet('font-size: 32px;')
+        b_layout.addWidget(bear_ico)
+
+        b_text = QVBoxLayout()
+        b_text.setSpacing(2)
+        b_title = QLabel('本地计算数据库与考勤历史归档')
+        b_title.setStyleSheet('font-size: 16px; font-weight: bold; color: #781236;')
+        b_sub = QLabel('纯本地 SQLite 存储 · 杜绝数据外泄 · 50MB 自动配额自愈保护')
+        b_sub.setStyleSheet('font-size: 12px; color: #70515C;')
+        b_text.addWidget(b_title)
+        b_text.addWidget(b_sub)
+        b_layout.addLayout(b_text, 1)
+
+        self.stats_label = QLabel()
+        self.stats_label.setStyleSheet('font-size: 13px; font-weight: bold; color: #781236; background: #FFFFFF; border: 1px solid #E4B8C3; border-radius: 8px; padding: 6px 12px;')
+        b_layout.addWidget(self.stats_label)
+        layout.addWidget(banner)
+
+        # 工具栏
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        btn_refresh = QPushButton('刷新记录')
+        btn_refresh.setIcon(ActionIcon.get('refresh', TOKENS['colors']['primary_dark']))
+        btn_refresh.clicked.connect(self._load_data)
+        toolbar.addWidget(btn_refresh)
+
+        btn_open_db_dir = QPushButton('打开数据库目录')
+        btn_open_db_dir.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
+        btn_open_db_dir.clicked.connect(self._open_db_dir)
+        toolbar.addWidget(btn_open_db_dir)
+
+        btn_clean = QPushButton('深度修剪缓存')
+        btn_clean.setIcon(ActionIcon.get('tools', TOKENS['colors']['text']))
+        btn_clean.clicked.connect(self._clean_storage)
+        toolbar.addWidget(btn_clean)
+
+        toolbar.addStretch(1)
+        layout.addLayout(toolbar)
+
+        # 历史记录表格
+        self.table = QTableView()
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.table.doubleClicked.connect(self._on_double_clicked)
+        layout.addWidget(self.table, 1)
+
+        # 底部操作栏
+        bottom = QHBoxLayout()
+        bottom.setSpacing(8)
+        self.btn_view_detail = QPushButton('打开该次明细表')
+        self.btn_view_detail.setIcon(ActionIcon.get('document', TOKENS['colors']['primary_dark']))
+        self.btn_view_detail.clicked.connect(self._open_selected_detail)
+        bottom.addWidget(self.btn_view_detail)
+
+        self.btn_view_summary = QPushButton('打开该次终稿汇总')
+        self.btn_view_summary.setIcon(ActionIcon.get('chart', TOKENS['colors']['primary_dark']))
+        self.btn_view_summary.clicked.connect(self._open_selected_summary)
+        bottom.addWidget(self.btn_view_summary)
+
+        bottom.addStretch(1)
+        btn_close = QPushButton('关闭')
+        btn_close.clicked.connect(self.accept)
+        bottom.addWidget(btn_close)
+        layout.addLayout(bottom)
+
+        self._runs_data = []
+        self._load_data()
+
+    def _load_data(self):
+        stats = self.storage.get_storage_stats()
+        count = stats.get('run_count', 0)
+        mb = stats.get('total_physical_mb', 0.0)
+        max_mb = stats.get('max_size_mb', 50.0)
+        self.stats_label.setText(f'⚡ 累计计算: {count} 次  |  💾 磁盘占用: {mb:.2f} MB / {max_mb:.1f} MB')
+
+        self._runs_data = self.storage.query_runs(limit=200)
+        model = QStandardItemModel(len(self._runs_data), 8, self)
+        model.setHorizontalHeaderLabels([
+            '序号', '计算时间', '明细表文件', '总应到', '总实到', '总免勤', '全校出勤率', '耗时'
+        ])
+        for r_idx, run in enumerate(self._runs_data):
+            rate_val = run.get('overall_rate')
+            rate_str = f"{rate_val * 100:.2f}%" if rate_val is not None else "—"
+            dur = run.get('duration_ms', 0)
+            items = [
+                QStandardItem(str(run.get('id', r_idx + 1))),
+                QStandardItem(str(run.get('created_at', ''))[:19].replace('T', ' ')),
+                QStandardItem(str(run.get('detail_file_name', ''))),
+                QStandardItem(str(run.get('total_expected') or '—')),
+                QStandardItem(str(run.get('total_actual') or '—')),
+                QStandardItem(str(run.get('total_exempt') or '—')),
+                QStandardItem(rate_str),
+                QStandardItem(f"{dur} ms" if dur else "—"),
+            ]
+            for c_idx, item in enumerate(items):
+                item.setTextAlignment(Qt.AlignCenter if c_idx not in (2,) else Qt.AlignLeft | Qt.AlignVCenter)
+                model.setItem(r_idx, c_idx, item)
+
+        self.table.setModel(model)
+        self.table.resizeColumnsToContents()
+        self.table.setColumnWidth(2, max(260, self.table.columnWidth(2)))
+
+    def _get_selected_run(self):
+        sel = self.table.selectionModel().selectedRows()
+        if not sel:
+            return None
+        row = sel[0].row()
+        if 0 <= row < len(self._runs_data):
+            return self._runs_data[row]
+        return None
+
+    def _open_selected_detail(self):
+        run = self._get_selected_run()
+        if not run:
+            QMessageBox.information(self, '提示', '请先在表格中选择一行记录。')
+            return
+        out_p = run.get('output_path', '')
+        if out_p and os.path.exists(out_p):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(out_p)))
+        else:
+            QMessageBox.information(self, '提示', f'明细表产物文件未找到：{out_p}')
+
+    def _open_selected_summary(self):
+        run = self._get_selected_run()
+        if not run:
+            QMessageBox.information(self, '提示', '请先在表格中选择一行记录。')
+            return
+        out_p = run.get('output_path', '')
+        if out_p:
+            d_dir = os.path.dirname(os.path.abspath(out_p))
+            if os.path.isdir(d_dir):
+                for f in os.listdir(d_dir):
+                    if f.endswith('.xlsx') and '终稿' in f:
+                        QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.join(d_dir, f)))
+                        return
+        QMessageBox.information(self, '提示', '未找到对应的终稿汇总表文件。')
+
+    def _on_double_clicked(self, index):
+        self._open_selected_detail()
+
+    def _open_db_dir(self):
+        db_p = getattr(self.storage, 'db_path', '')
+        if db_p:
+            d = os.path.dirname(os.path.abspath(db_p))
+            QDesktopServices.openUrl(QUrl.fromLocalFile(d))
+
+    def _clean_storage(self):
+        self.storage.cleanup_old_runs()
+        self._load_data()
+        QMessageBox.information(self, '提示', '已完成数据库自愈维护与配额修剪。')
 
 
 
@@ -1730,6 +2127,11 @@ class MainWindow(QMainWindow):
         self._pulse_orig_color = None
         self._active_toasts: set[ToastNotification] = set()
         self._run_start_time = None
+        try:
+            from core.storage import AttendanceStorage
+            self.storage = AttendanceStorage()
+        except Exception:
+            self.storage = None
         self._build_ui()
         self._init_shortcuts()
         self._load_settings()
@@ -1890,8 +2292,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        self.detail_slot = DropSlot('01', '考勤明细或汇总表', '拖入 Excel 文件，或点击选择')
-        self.exempt_slot = DropSlot('02', '免勤人员统计表', '支持添加多份 Excel，合并后去重',
+        self.detail_slot = DropSlot('01', '考勤明细表', '拖入 Excel 明细表，自动识别周次并填写')
+        self.detail_slot.picked.connect(self._on_detail_picked)
+        self.exempt_slot = DropSlot('02', '免勤人员统计表', '支持添加多份 Excel，合并后智能去重',
                                     multiple=True)
         self.result_slot = ResultSlot(self._current_input_paths)
 
@@ -1899,6 +2302,16 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.exempt_slot, 1)
         layout.addWidget(self.result_slot, 1)
         return row
+
+    def _on_detail_picked(self, path: str):
+        if not path:
+            return
+        from core.parsing import parse_weeks
+        base = os.path.basename(path)
+        weeks = parse_weeks(base)
+        if weeks:
+            self.week_spin.setValue(min(weeks))
+        self._refresh_output_preview()
 
     def _build_left(self):
         panel = QFrame()
@@ -1913,20 +2326,60 @@ class MainWindow(QMainWindow):
         form.setSpacing(8)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         layout.addLayout(form)
-        title = QLabel('统计设置')
+        title = QLabel('本地计算与输出')
         title.setObjectName('sectionTitle')
         form.addRow(title)
 
+        # 豪华大气可爱：本地计算数据库与累计次数卡片
+        self.calc_stats_card = QFrame()
+        self.calc_stats_card.setObjectName('calcStatsCard')
+        c_layout = QVBoxLayout(self.calc_stats_card)
+        c_layout.setContentsMargins(12, 10, 12, 10)
+        c_layout.setSpacing(6)
+
+        c_top = QHBoxLayout()
+        c_badge = QLabel('🍓 离线计算数据库')
+        c_badge.setStyleSheet('font-size:12px; font-weight:600; color:#781236;')
+        c_top.addWidget(c_badge)
+        c_top.addStretch(1)
+        c_layout.addLayout(c_top)
+
+        c_mid = QHBoxLayout()
+        c_label = QLabel('累计在本地计算')
+        c_label.setStyleSheet('font-size:13px; color:#5A3240; font-weight:500;')
+        count_num = self.storage.get_run_count() if hasattr(self, 'storage') and self.storage else 0
+        self.calc_count_val = QLabel(f"{count_num} 次")
+        self.calc_count_val.setObjectName('calcCountNumber')
+        c_mid.addWidget(c_label)
+        c_mid.addStretch(1)
+        c_mid.addWidget(self.calc_count_val)
+        c_layout.addLayout(c_mid)
+
+        self.btn_open_db = QPushButton('🗄️ 查看数据库记录…')
+        self.btn_open_db.setObjectName('dbViewBtn')
+        self.btn_open_db.setIcon(ActionIcon.get('database', TOKENS['colors']['primary_dark']))
+        self.btn_open_db.setIconSize(QSize(15, 15))
+        self.btn_open_db.clicked.connect(self._open_database_viewer)
+        c_layout.addWidget(self.btn_open_db)
+        form.addRow(self.calc_stats_card)
+
+        # 智能识别周次（紧凑呈现，兼顾已有测试）
+        week_row = QHBoxLayout()
+        week_label = QLabel('统计周次')
+        week_label.setObjectName('settingLabel')
         self.week_spin = QSpinBox()
         self.week_spin.setRange(1, 30)
         self.week_spin.setValue(7)
         self.week_spin.setPrefix('第 ')
         self.week_spin.setSuffix(' 周')
-        week_label = QLabel('统计周次')
-        week_label.setObjectName('settingLabel')
+        self.week_spin.setToolTip('已开启自动识别：拖入明细表后自动更新周次')
         week_label.setBuddy(self.week_spin)
+        auto_pill = QLabel('自动识别')
+        auto_pill.setObjectName('localBadge')
+        week_row.addWidget(self.week_spin)
+        week_row.addWidget(auto_pill)
         form.addRow(week_label)
-        form.addRow(self.week_spin)
+        form.addRow(week_row)
 
         self.out_edit = QLineEdit()
         self.out_edit.setPlaceholderText('使用默认位置')
@@ -1951,7 +2404,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.output_preview)
 
         notice = QLabel(
-            '自动识别教室/学院模板回填免勤。辅导员巡查、考勤时间和巡查效果由人工填写。')
+            '自动识别并输出回填考勤明细表与内置标准终稿汇总表。')
         notice.setObjectName('notice')
         notice.setWordWrap(True)
         layout.addWidget(notice)
@@ -1968,6 +2421,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.run_btn)
         return panel
 
+    def _open_database_viewer(self):
+        dlg = DatabaseHistoryDialog(self, storage=self.storage)
+        dlg.exec_()
+
     def _build_tabs(self):
         self.tabs = QTabWidget()
         self.tabs.setObjectName('workspaceTabs')
@@ -1979,14 +2436,7 @@ class MainWindow(QMainWindow):
         overview_layout.setContentsMargins(12, 12, 12, 12)
         self.overview_metrics = self._add_metrics(
             overview_layout, ('统计周次', '学院数', '免勤合计 · 人次', '异常条目'))
-        overview_actions = QHBoxLayout()
-        overview_actions.addStretch(1)
-        tools_button = QPushButton('更多工具…')
-        tools_button.setIcon(ActionIcon.get('tools', TOKENS['colors']['primary_dark']))
-        tools_button.setIconSize(QSize(16, 16))
-        tools_button.clicked.connect(self._open_tools)
-        overview_actions.addWidget(tools_button)
-        overview_layout.addLayout(overview_actions)
+
         self.summary_stack = QStackedWidget()
         self.empty_state_card = EmptyStateCard(self)
         self.summary_view = QPlainTextEdit()
@@ -1994,19 +2444,36 @@ class MainWindow(QMainWindow):
         self.summary_stack.addWidget(self.empty_state_card)
         self.summary_stack.addWidget(self.summary_view)
         overview_layout.addWidget(self.summary_stack, 1)
-        self.tabs.addTab(overview, '概览')
 
-        self.tabs.addTab(self._build_exempt_page(), '学院免勤统计')
+        self.tabs.addTab(overview, ActionIcon.get('dashboard', TOKENS['colors']['primary_dark']), '概览')
+        self.tabs.addTab(self._build_exempt_page(), ActionIcon.get('document', TOKENS['colors']['primary_dark']), '学院免勤统计')
+
         self.rate_views = QTabWidget()
         self.rate_table = QTableView()
         self.rate_table.doubleClicked.connect(self._on_rate_row_double_clicked)
         self.rate_views.addTab(self.rate_table, '每日')
         self.weekly_rate_table = QTableView()
         self.rate_views.addTab(self.weekly_rate_table, '每周')
-        self.tabs.addTab(self.rate_views, '出勤率')
+        self.tabs.addTab(self.rate_views, ActionIcon.get('percent', TOKENS['colors']['primary_dark']), '出勤率')
 
         self.dict_tabs = QTabWidget()
-        self.tabs.addTab(self.dict_tabs, '词典编辑')
+        self.tabs.addTab(self.dict_tabs, ActionIcon.get('dictionary', TOKENS['colors']['primary_dark']), '词典编辑')
+
+        # 更多工具按钮：作为顶部导航栏常驻角标按钮，位于「词典编辑」之后，华丽大气可爱
+        tools_container = QWidget()
+        tools_layout = QHBoxLayout(tools_container)
+        tools_layout.setContentsMargins(0, 0, 8, 2)
+        tools_layout.setSpacing(6)
+        self.tools_button = QPushButton('更多工具…')
+        self.tools_button.setObjectName('toolsBtn')
+        self.tools_button.setIcon(ActionIcon.get('tools', TOKENS['colors']['primary_dark']))
+        self.tools_button.setIconSize(QSize(16, 16))
+        self.tools_button.setToolTip('打开辅助工具箱：教室明细、异常清单、低出勤率复核、合成数据自测与可选设置')
+        self.tools_button.clicked.connect(self._open_tools)
+        self.tools_btn = self.tools_button
+        tools_layout.addWidget(self.tools_button)
+        self.tabs.setCornerWidget(tools_container, Qt.TopRightCorner)
+
         self._build_tools()
         return self.tabs
 
@@ -2550,7 +3017,13 @@ class MainWindow(QMainWindow):
             return
         self._last_error_trace = None
         self._render(result)
-        self.result_slot.set_result(result.output_path, result.input_paths)
+        summary_path = getattr(result, 'summary_output_path', '')
+        self.result_slot.set_result(result.output_path, result.input_paths, summary_path=summary_path)
+        if hasattr(self, 'calc_count_val') and hasattr(self, 'storage') and self.storage:
+            try:
+                self.calc_count_val.setText(f"{self.storage.get_run_count()} 次")
+            except Exception:
+                pass
         start_time = getattr(self, '_run_start_time', None) or datetime.now()
         elapsed = (datetime.now() - start_time).total_seconds()
         elapsed_str = f"{max(0.1, elapsed):.1f}"

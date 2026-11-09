@@ -41,6 +41,7 @@ class RunConfig:
     include_exempt_summary: bool = False
     db_path: Optional[str] = None          # [M1 新增] 指定数据库路径 (None 表示采用默认路径)
     enable_storage: bool = True            # [M1 新增] 历史记录入库开关 (默认开启)
+    summary_output_path: Optional[str] = None  # 汇总表（执行情况终稿）输出路径，未指定时自动与明细表同目录生成
     # 注：本口径「免勤不封顶」，因此不提供任何封顶开关——
     # 留一个可切到被否口径的旋钮，比没有旋钮更危险。
 
@@ -54,6 +55,7 @@ class RunResult:
     ok: bool = False
     error: str = ''
     output_path: Optional[str] = None
+    summary_output_path: Optional[str] = None
     summary: Dict = field(default_factory=dict)
     college_rates: List[CollegeRate] = field(default_factory=list)
     room_rows: List[Dict] = field(default_factory=list)
@@ -210,6 +212,49 @@ def run(config: RunConfig) -> RunResult:
                 estimated_cells=calc.estimated_cells, college_exempt=college_exempt,
                 append_report=append_report if config.include_exempt_summary else None)
         result.output_path = export_result.output_path
+
+        # ---- 自动基于内置空白模板填写并输出规范终稿汇总表 ----
+        try:
+            from .summary_template import generate_summary_file
+            out_dir = os.path.dirname(output_path) if output_path else ''
+            week_num = getattr(config, 'week_no', 0)
+            week_str = f"第{week_num}周" if week_num else "第九周"
+
+            summary_target = getattr(config, 'summary_output_path', None)
+            if not summary_target and out_dir:
+                summary_target = os.path.join(out_dir, f"桂林理工大学2026年秋季学期{week_str}早晚自习执行情况终稿.xlsx")
+
+            if summary_target:
+                # 统计 15 学院综合出勤率
+                col_overall = {}
+                col_buckets = defaultdict(list)
+                for r in rates:
+                    if getattr(r, 'rate', None) is not None and getattr(r, 'expected', 0) > 0:
+                        col_buckets[r.college].append(r.rate)
+                for c_name, r_list in col_buckets.items():
+                    if r_list:
+                        col_overall[c_name] = sum(r_list) / len(r_list)
+
+                # 收集考勤异常说明
+                col_anom_map = {}
+                for anom in result.anomalies:
+                    scope = anom.get('scope', '')
+                    for c_name in col_overall:
+                        if c_name in scope:
+                            prev = col_anom_map.get(c_name, '')
+                            nt = anom.get('type', '') or anom.get('note', '')
+                            if nt and nt not in prev:
+                                col_anom_map[c_name] = (prev + '；' + nt).strip('；')
+
+                generate_summary_file(
+                    output_path=summary_target,
+                    college_rates=col_overall,
+                    college_anomalies=col_anom_map,
+                    week_label=week_str,
+                )
+                result.summary_output_path = summary_target
+        except Exception as exc:
+            result.anomalies.append(_anomaly('自动生成汇总表终稿跳过', 'info', '汇总模板引擎', str(exc)))
         for name in export_result.removed_sheets:
             result.anomalies.append(_anomaly('已删除多余工作表', 'info', name,
                                              '按规则只保留三张原始工作表'))
