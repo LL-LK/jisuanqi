@@ -24,7 +24,7 @@ from openpyxl import load_workbook
 from .model import ExemptRecord
 from .parsing import (extract_group_size, is_group_application, normalize_class,
                       normalize_campus, normalize_room, normalize_text,
-                      parse_int, parse_session, parse_weekdays, parse_weeks,
+                      parse_int, parse_session, parse_sessions, parse_weekdays, parse_weeks,
                       resolve_pairs, strip_spaces)
 
 _HEADER_HINTS = ('学号', '免勤周次')
@@ -65,7 +65,7 @@ def normalize_sid(value) -> tuple:
                 return text.zfill(13), True, ('整型 %d 位，已左补零至 13 位' % len(text))
             return text, len(text) == 13, ('整型 %d 位' % len(text))
         return str(value), False, '小数型学号'
-    text = strip_spaces(value)
+    text = strip_spaces(value).strip("'\"‘’“”`")
     if not text:
         return '', False, '空'
     if text.isdigit():
@@ -116,13 +116,13 @@ def _detect_columns(ws, header_row: int) -> Dict[str, int]:
             cols['college'] = col
         elif '专业班级' in head or head == '班级':
             cols['class'] = col
-        elif head == '免勤周次':
+        elif head in ('免勤周次', '请假周次') or '周次' in head:
             cols['week'] = col
-        elif head in ('免勤时间', '免勤星期'):
+        elif head in ('免勤时间', '免勤星期', '请假时间', '请假星期'):
             cols['time'] = col
-        elif head == '免勤自习':
+        elif head in ('免勤自习', '请假自习') or head.startswith(('免勤自习', '请假自习')):
             cols['session'] = col
-        elif head in ('所在校区', '校区'):
+        elif head in ('所在校区', '校区') or head.startswith('所在校区'):
             cols['campus'] = col
         elif '理由' in head:
             cols['reason'] = col
@@ -173,19 +173,24 @@ def load_exemptions(path: str, source: str = '未分类',
                     reason = normalize_text(cell('reason'))
                     week_text = normalize_text(cell('week'))
                     time_text = normalize_text(cell('time'))
-                    campus = normalize_campus(cell('campus'), custom_map=campus_map)
-                    session = parse_session(cell('session')) or sheet_session
+                    raw_campus = cell('campus')
+                    campus = normalize_campus(raw_campus, custom_map=campus_map)
+                    if campus == '待确认' and not strip_spaces(raw_campus) and (sid_raw or college or class_text):
+                        campus = '雁山'
+                    sessions = parse_sessions(cell('session'), fallback_session=sheet_session, time_hint=time_text)
                     room1 = normalize_room(cell('room'))
                     room2 = normalize_room(cell('room2'))
-                    if session == '晚自习' and room2:
-                        room = room2
-                    else:
-                        room = room1 or room2
 
                     if not any([sid_raw, name, college, class_text]):
                         continue
+                    # 跳过模板顶部的张三/李四示例空行（无学号且无学院、无班级、无周次）
+                    if not sid_raw and not college and not class_text and not week_text:
+                        continue
                     if not keep_unassigned and not college and not class_text:
                         continue
+                    if not college and class_text:
+                        if any(k in class_text for k in ('服设', '服装', '数媒', '数字媒体', '动画', '产品', '环艺', '环设', '首饰')):
+                            college = '艺术学院'
 
                     group_size = extract_group_size(name) or extract_group_size(class_text)
                     # 没有「共N人」的集体申请不构成集体申请：它既不覆盖同班个人，
@@ -200,31 +205,48 @@ def load_exemptions(path: str, source: str = '未分类',
                     if not weekdays and pairs_set:
                         weekdays = {d for (_w, d) in pairs_set}
 
-                    records.append(ExemptRecord(
-                        sid=sid_raw,
-                        name=name,
-                        college=college,
-                        class_text=class_text,
-                        class_key=normalize_class(class_text or name, custom_map=class_map),
-                        weeks=weeks,
-                        weekdays=weekdays,
-                        session=session,
-                        campus=campus,
-                        room=room,
-                        reason=reason,
-                        group_size=group_size,
-                        source=source,
-                        row=row,
-                        sid_ok=sid_ok,
-                        sid_kind=sid_kind,
-                        placeholder=is_placeholder_sid(sid_raw),
-                        sid_padded='补零' in (sid_kind or ''),
-                        whole_term=whole_term,
-                        pairs=frozenset(pairs_set),
-                        group_like=is_group_application(name, class_text),
-                        source_ref=(f'免勤表{source_number} / 工作表{sheet_number} / 第{row}行'
-                                    if source_number else ''),
-                    ))
+                    # 支持单格内用逗号/顿号填写的多名无学号学生（如 '梁烨霞，余文霞，...'）自动拆分为独立个人记录
+                    if (not sid_raw and not group_size and not is_group_application(name, class_text)
+                            and name and any(sep in name for sep in (',', '、'))):
+                        sub_names = [n.strip() for n in re.split(r'[,、]+', name) if n.strip()]
+                        if len(sub_names) >= 2 and all(2 <= len(n) <= 5 for n in sub_names):
+                            name_entries = [(f'NOSID:{college}:{normalize_class(class_text)}:{n}', n, True, '姓名班级合成键') for n in sub_names]
+                        else:
+                            name_entries = [(sid_raw, name, sid_ok, sid_kind)]
+                    else:
+                        name_entries = [(sid_raw, name, sid_ok, sid_kind)]
+
+                    for cur_sid, cur_name, cur_sid_ok, cur_sid_kind in name_entries:
+                        for session in sessions:
+                            if session == '晚自习' and room2:
+                                room = room2
+                            else:
+                                room = room1 or room2
+                            records.append(ExemptRecord(
+                                sid=cur_sid,
+                                name=cur_name,
+                                college=college,
+                                class_text=class_text,
+                                class_key=normalize_class(class_text or cur_name, custom_map=class_map),
+                                weeks=weeks,
+                                weekdays=weekdays,
+                                session=session,
+                                campus=campus,
+                                room=room,
+                                reason=reason,
+                                group_size=group_size,
+                                source=source,
+                                row=row,
+                                sid_ok=cur_sid_ok,
+                                sid_kind=cur_sid_kind,
+                                placeholder=is_placeholder_sid(cur_sid),
+                                sid_padded='补零' in (cur_sid_kind or ''),
+                                whole_term=whole_term,
+                                pairs=frozenset(pairs_set),
+                                group_like=is_group_application(cur_name, class_text),
+                                source_ref=(f'免勤表{source_number} / 工作表{sheet_number} / 第{row}行'
+                                            if source_number else ''),
+                            ))
         finally:
             wb.close()
     if require_schema and not recognized:
@@ -320,6 +342,11 @@ def _audit_personal_identities(records, days_by_record, agg):
                     agg.same_person_pairs += 1
                 else:
                     matches = {candidate, rec.sid}
+            elif (not rec.sid and len(matches) == 0 and name and rec.class_key
+                  and not rec.placeholder and not rec.group_like
+                  and not name.endswith(('专业', '班'))
+                  and name not in ('整班', '整个班级', '新能源、高分子、金属')):
+                rec = replace(rec, sid=f'NOSID:{rec.college}:{rec.class_key}:{name}', sid_ok=True)
             if not rec.sid or len(matches) > 1:
                 agg.invalid_records += 1
                 agg.identity_review_scopes.update((rec.college, day, rec.session) for day in days)

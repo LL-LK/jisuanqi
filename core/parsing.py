@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from datetime import date, timedelta
 from typing import Iterable, Optional, Tuple
 
 # ---------------------------------------------------------------- 基础归一化
@@ -170,17 +171,24 @@ def _segment_facts(seg: str, default_kind: str, window_week: Optional[int] = Non
 
     has_week_marker = bool(re.search(r'\d\s*周|第\s*[\d%s]+\s*周' % _CN_NUM_CHARS, text))
 
-    # ① 星期区间：'周一到周五'（必须展开，否则漏周二/周三/周四）
+    # 0. 修正常见五笔/拼音录入笔误（如 '第为周' -> '第九周'）
+    text = text.replace('第为周', '第9周')
+
+    # ① 星期区间：'周一到周五' / '本周一到下周日'（必须展开，否则漏周二/周三/周四）
     def _span(m):
         weekdays.update(_weekday_span(m.group(1), m.group(2)))
-    text = _mask(text, r'周([一二三四五六日天])\s*(?:到|至|-|—|–|~)\s*周?([一二三四五六日天])', _span)
+    text = _mask(text, r'(?:本|下)?(?:周|星期|礼拜)([一二三四五六日天])\s*(?:到|至|-|—|–|~)\s*(?:本|下)?(?:周|星期|礼拜)?([一二三四五六日天])', _span)
 
-    # ② 星期单点：'周一' / '星期二' / '礼拜天'
+    # ② 星期单点：'周一' / '星期二' / '礼拜天' / '周4'
     def _point(m):
-        weekdays.add(_WEEKDAY_BY_CN[m.group(1)])
-    text = _mask(text, r'(?:周|星期|礼拜)\s*([一二三四五六日天])', _point)
+        tok = m.group(1)
+        if tok in _WEEKDAY_BY_CN:
+            weekdays.add(_WEEKDAY_BY_CN[tok])
+        elif tok.isdigit() and 1 <= int(tok) <= 7:
+            weekdays.add(WEEKDAY_NAMES[int(tok) - 1])
+    text = _mask(text, r'(?:本|下)?(?:周|星期|礼拜)\s*([一二三四五六日天1-7])', _point)
 
-    # ③ 周次区间（中文数字）：'第六-十七周' → {6..17}
+    # ③ 周次区间（中文数字）：'第六-十七周' / '九至十六周' → {6..17}
     def _cn_range(m):
         lo = _cn_number(m.group(1))
         hi = _cn_number(m.group(2))
@@ -189,7 +197,7 @@ def _segment_facts(seg: str, default_kind: str, window_week: Optional[int] = Non
         if lo > hi:
             lo, hi = hi, lo
         weeks.update(range(lo, hi + 1))
-    text = _mask(text, r'第?\s*([%s]+)\s*(?:-|—|–|~|至|到)\s*第?\s*([%s]+)\s*周'
+    text = _mask(text, r'第?\s*([%s]+)\s*周?\s*(?:-|—|–|~|至|到)\s*第?\s*([%s]+)\s*周'
                  % (_CN_NUM_CHARS, _CN_NUM_CHARS), _cn_range)
 
     # ④ 周次区间（阿拉伯数字）：'第6-7' / '第7周-第8周' / '9-13周' / '6-10周'
@@ -223,9 +231,16 @@ def _segment_facts(seg: str, default_kind: str, window_week: Optional[int] = Non
         weekdays.add(_WEEKDAY_BY_CN[m.group(1)])
     text = _mask(text, r'第([一二三四五六日天])(?![周])', _bare_d)
 
-    # ⑧ 裸中文数字串（不跟「周」）→ 星期列举：'周一 三 四' 里的 三/四
-    #    注意：裸「天」不算星期（'今天' 不是周日）；只有带「周/星期/礼拜」前缀的才算，
-    #    那部分已在 ② 里处理。
+    # ⑧ 裸中文数字串（不跟「周」）：
+    #    在 TIME 列（或已识别出星期前缀的段）中作为星期列举（如 '周一 三 四' 里的 三/四）；
+    #    在 WEEK 列且整段仅为纯中文周次（如 '九'、'第九'）时作为周次解析。
+    if default_kind == 'WEEK' and not weekdays and not has_week_marker:
+        def _bare_week_cn(m):
+            d = _cn_number(m.group(1))
+            if d is not None and 1 <= d <= MAX_WEEK_NO:
+                weeks.add(d)
+        text = _mask(text, r'^\s*第?\s*([%s]+)\s*$' % _CN_NUM_CHARS, _bare_week_cn)
+
     def _bare_cn(m):
         for ch in m.group(0):
             if ch == '天':
@@ -235,8 +250,18 @@ def _segment_facts(seg: str, default_kind: str, window_week: Optional[int] = Non
                 weekdays.add(day)
     text = _mask(text, r'[一二三四五六日天]+(?![周])', _bare_cn)
 
-    # ⑨ 剩余阿拉伯数字：周次列当周次；时间列只在 ≤7 且无周次标记时当星期
-    for token in re.split(r'[,;、/\s]+', text):
+    # ⑨ 剩余阿拉伯数字：周次列当周次；时间列支持 Excel 日期序列号（45000..50000）或 1..7 星期
+    #    注意：排除 '9-10节' / '11-12节' 等课节编号被误识别为星期或周次。
+    text_no_section = re.sub(r'\d{1,2}\s*(?:-|—|–|~|至|到|,|、)\s*\d{1,2}\s*节', ' ', text)
+    text_no_section = re.sub(r'第?\s*\d{1,2}\s*节', ' ', text_no_section)
+    for token in re.split(r'[,;、/\s]+', text_no_section):
+        m_serial = re.fullmatch(r'(\d{5})', token.strip())
+        if m_serial and default_kind == 'TIME':
+            serial_val = int(m_serial.group(1))
+            if 44000 <= serial_val <= 55000:
+                dt = date(1899, 12, 30) + timedelta(days=serial_val)
+                weekdays.add(WEEKDAY_NAMES[dt.weekday()])
+                continue
         m = re.search(r'(?<!\d)(\d{1,3})(?!\d)', token)
         if not m:
             continue
@@ -420,7 +445,7 @@ def normalize_campus(text, custom_map: Optional[dict] = None) -> str:
                 return v
     if '屏风' in raw:
         return '屏风'
-    if '雁山' in raw or '燕山' in raw:
+    if '雁山' in raw or '燕山' in raw or '㕍山' in raw:
         return '雁山'
     if '雁门' in raw:
         return '雁门'
@@ -468,10 +493,15 @@ def normalize_class(text, custom_map: Optional[dict] = None) -> str:
 
 
 def extract_group_size(text) -> Optional[int]:
-    """从 '应用统计学26-1班全体学生（共43人）' 里取出 43。"""
+    """从 '应用统计学26-1班全体学生（共43人）' 或 '125人晚上校庆彩排' 里取出人数。"""
     raw = normalize_text(text)
     m = re.search(r'共\s*(\d+)\s*人', raw)
-    return int(m.group(1)) if m else None
+    if m:
+        return int(m.group(1))
+    m2 = re.search(r'(?<!\d)(\d{2,4})\s*人', raw)
+    if m2:
+        return int(m2.group(1))
+    return None
 
 
 def is_group_application(*texts) -> bool:
@@ -507,15 +537,42 @@ def parse_int(value) -> Optional[int]:
 
 
 def parse_session(text) -> Optional[str]:
-    """'早' → '早自习'；'晚' → '晚自习'。"""
+    """'早' → '早自习'；'晚' → '晚自习'；同时含早晚时返回 None（由 parse_sessions 展开）。"""
     raw = strip_spaces(text)
     if not raw:
         return None
-    if '早' in raw:
+    has_early = '早' in raw
+    has_late = '晚' in raw
+    if has_early and has_late:
+        return None
+    if has_early:
         return '早自习'
-    if '晚' in raw:
+    if has_late:
         return '晚自习'
     return None
+
+
+def parse_sessions(text, fallback_session: Optional[str] = None, time_hint: str = '') -> Tuple[Optional[str], ...]:
+    """解析自习时段，支持 '早晚自习' / '早、晚自习' 同时展开为 ('早自习', '晚自习')。"""
+    raw = strip_spaces(text)
+    has_early = '早' in raw
+    has_late = '晚' in raw
+    if has_early and has_late:
+        return ('早自习', '晚自习')
+    if has_early:
+        return ('早自习',)
+    if has_late:
+        return ('晚自习',)
+    if fallback_session:
+        return (fallback_session,)
+    hint = strip_spaces(time_hint)
+    if '早' in hint and '晚' in hint:
+        return ('早自习', '晚自习')
+    if '早' in hint:
+        return ('早自习',)
+    if '晚' in hint:
+        return ('晚自习',)
+    return (None,)
 
 
 def normalize_room(text) -> str:
