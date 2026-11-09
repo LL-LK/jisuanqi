@@ -1,0 +1,176 @@
+name: Multi-Platform Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows Release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 openpyxl pyinstaller
+
+      - name: Build Windows Executable
+        run: |
+          pyinstaller attendance.spec --clean --noconfirm
+
+      - name: Package Windows Artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "release_win" -Force
+          Copy-Item "dist\三早一晚免勤自动统计.exe" -Destination "release_win\"
+          Copy-Item "免勤词典.xlsx" -Destination "release_win\"
+          Copy-Item "使用说明.md" -Destination "release_win\"
+          Copy-Item "README.md" -Destination "release_win\"
+          Compress-Archive -Path "release_win\*" -DestinationPath "三早一晚自动统计_Windows便携版.zip"
+          Get-FileHash "三早一晚自动统计_Windows便携版.zip" -Algorithm SHA256 > "三早一晚自动统计_Windows便携版.zip.sha256"
+
+      - name: Upload Windows Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            三早一晚自动统计_Windows便携版.zip
+            三早一晚自动统计_Windows便携版.zip.sha256
+
+  build-macos:
+    name: Build macOS Release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install PySide6 openpyxl pyinstaller
+
+      - name: Build macOS App
+        run: |
+          pyinstaller attendance.spec --clean --noconfirm
+
+      - name: Package macOS Artifacts
+        run: |
+          mkdir -p release_mac
+          cp -r dist/三早一晚免勤自动统计* release_mac/ || cp -r dist/* release_mac/
+          cp 免勤词典.xlsx release_mac/
+          cp 使用说明.md release_mac/
+          cp README.md release_mac/
+          tar -czf 三早一晚自动统计_macOS版.tar.gz -C release_mac .
+          shasum -a 256 三早一晚自动统计_macOS版.tar.gz > 三早一晚自动统计_macOS版.tar.gz.sha256
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: |
+            三早一晚自动统计_macOS版.tar.gz
+            三早一晚自动统计_macOS版.tar.gz.sha256
+
+  build-linux-huawei:
+    name: Build Linux / 华为 openEuler Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies & system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgl1-mesa-glx libegl1-mesa libxkbcommon-x11-0 libfontconfig1
+          python -m pip install --upgrade pip
+          pip install PySide6 openpyxl pyinstaller
+
+      - name: Build Linux Standalone Executable
+        run: |
+          pyinstaller attendance.spec --clean --noconfirm
+
+      - name: Package Linux Artifacts
+        run: |
+          mkdir -p release_linux
+          cp dist/三早一晚免勤自动统计 release_linux/ || cp dist/* release_linux/ || true
+          cp 免勤词典.xlsx release_linux/
+          cp 使用说明.md release_linux/
+          cp README.md release_linux/
+          tar -czf 三早一晚自动统计_Linux_华为openEuler版.tar.gz -C release_linux .
+          sha256sum 三早一晚自动统计_Linux_华为openEuler版.tar.gz > 三早一晚自动统计_Linux_华为openEuler版.tar.gz.sha256
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-huawei-release
+          path: |
+            三早一晚自动统计_Linux_华为openEuler版.tar.gz
+            三早一晚自动统计_Linux_华为openEuler版.tar.gz.sha256
+
+  publish-release:
+    name: Create GitHub Release
+    needs: [build-windows, build-macos, build-linux-huawei]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Prepare Release Directory
+        run: |
+          mkdir -p release-assets
+          find all-artifacts -type f -exec cp {} release-assets/ \;
+          ls -la release-assets/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || 'v1.1.0' }}
+          name: Release ${{ github.ref_name || 'v1.1.0' }} - 多系统便携轻量版
+          draft: false
+          prerelease: false
+          files: release-assets/*
+          body: |
+            ## 🎉 三早一晚免勤自动统计系统发布包
+
+            本版本已升级为豪华大气可爱的「草莓小熊」视觉设计，纯本地离线 SQLite 数据库存管与 50MB 配额守护，支持自动填好回填明细表与内置标准终稿汇总表。
+
+            ### 📦 多系统分发文件
+            - **Windows**: `三早一晚自动统计_Windows便携版.zip`（解压即用，无外部依赖）
+            - **macOS**: `三早一晚自动统计_macOS版.tar.gz`
+            - **Linux / 华为 openEuler / 统信 UOS**: `三早一晚自动统计_Linux_华为openEuler版.tar.gz`
+            - 各系统压缩包均附带独立的 `.sha256` 校验和文件。
+
+            ### 🔒 核心特性
+            1. **零数据外泄**：纯本地运算与 SQLite 存储，不传任何个人数据到云端。
+            2. **内置官方终稿模板**：无需寻找空模板，自动依据 15 学院考勤数据回填并排版终稿。
+            3. **双表清晰隔离**：回填明细表与终稿汇总表双卡片操作，杜绝误点混淆。
+            4. **轻量化加载**：剔除所有测试与不相关动态库，冷启动极速。
