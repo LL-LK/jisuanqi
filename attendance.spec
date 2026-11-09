@@ -45,6 +45,7 @@ hiddenimports = [
     'core.excel_safety',
     'core.storage',
     'core.exempt_report',
+    'core.summary_template',
 ]
 
 # 3. Excludes: Heavyweight unused Qt modules and dev/scientific dependencies
