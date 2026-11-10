@@ -9,7 +9,7 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
-from .export import atomic_output
+from .export import atomic_output, generate_tamper_metadata
 from .io_detail import week_from_label
 from .parsing import WEEKDAY_NAMES, normalize_text, parse_college_label, strip_spaces
 
@@ -30,6 +30,16 @@ def _attendance_period(sheet):
     note = next((match.group(1).strip() for value in texts
                  if (match := re.search(r'考勤时间\s*[:：]\s*(.*)', value))), None)
     if note is None:
+        weekly = next((match.group(1).strip() for value in texts
+                       if (match := re.search(r'考勤时段\s*[:：]\s*(.*)', value))), None)
+        if weekly is not None:
+            scopes = {}
+            for part in re.split(r'[,、]+', weekly):
+                day, session = part.strip()[:2], part.strip()[2:]
+                if day not in WEEKDAY_NAMES or session not in ('早自习', '晚自习'):
+                    raise ValueError('无法识别汇总表的考勤时段，请按「周一早自习」格式填写')
+                scopes[(day, session)] = None
+            return tuple(scopes), weekly
         return tuple((day, session) for day in WEEKDAY_NAMES
                      for session in ('早自习', '晚自习')), '所选周次全部早晚自习'
 
@@ -117,5 +127,6 @@ def export_attendance_summary(input_path, output_path, template, totals, append_
                 cell.alignment = Alignment(horizontal='center', vertical='center')
                 cell.fill = PatternFill('solid', fgColor='FFFFF3CD') if pending else PatternFill()
         append_report(book)
+        generate_tamper_metadata(book, sheet_names=(template.sheet,))
         with atomic_output(output_path) as temporary:
             book.save(temporary)

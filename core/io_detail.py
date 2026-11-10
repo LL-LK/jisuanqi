@@ -14,6 +14,9 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
+from contextlib import closing
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
@@ -32,6 +35,32 @@ def week_from_label(text):
     weeks = {week for label in WEEK_LABEL.findall(normalize_text(text))
              for week in parse_weeks(label) if 1 <= week <= 30}
     return next(iter(weeks)) if len(weeks) == 1 else None
+
+
+def infer_workbook_week(path):
+    """优先使用表内标题。多个标题冲突且无多数时，要求明确指定周次。"""
+    with open(path, 'rb') as source, closing(load_workbook(source, read_only=True, data_only=True)) as book:
+        sheets = [sheet for sheet in book if sheet.title in ('雁山（早）', '雁山（晚）', '屏风')]
+        if not sheets:
+            sheets = [sheet for sheet in book if sheet.sheet_state == "visible"]
+        weeks = Counter(week for sheet in sheets if (week := week_from_label(sheet['A1'].value)))
+    if weeks:
+        week, count = weeks.most_common(1)[0]
+        if count * 2 <= sum(weeks.values()):
+            raise ValueError('考勤表内标题周次冲突，请核对并手动指定统计周次')
+        return week
+    return week_from_label(Path(path).name)
+
+
+def actual_cells(workbook):
+    """以原表的表头和坐标定位雁山实到栏，保留空白、零、文字及公式。"""
+    return {
+        (sheet.title, row, col): sheet.cell(row, col).value
+        for sheet in workbook if sheet.title in ('雁山（早）', '雁山（晚）')
+        for header in (_find_header_row(sheet),)
+        for col in _detect_data_cols(sheet, header)['actuals'].values()
+        for row in range(header + 1, sheet.max_row + 1)
+    }
 
 
 def _merged_value(ws, col: int, row: int):
@@ -141,6 +170,13 @@ def _detect_rate_cols(ws, header_row: int, actual_days):
         if head and any(k in head for k in NON_RATE_HEADER_KEYS):
             excluded.append((col, head))
     return cols, excluded, inferred_row
+
+
+def _parse_headcount(value):
+    """保留数值型文本，拒绝把备注里的数字、负数或小数当作人数。"""
+    text = normalize_text(value)
+    match = re.fullmatch(r'([0-9]+)(?:\.0+)?\s*人?', text)
+    return int(match[1]) if match else None
 
 
 def _detect_data_cols(ws, header_row: int):
@@ -279,7 +315,7 @@ def load_detail(path: str) -> DetailModel:
                     for day, col in cols['actuals'].items():
                         raw = ws.cell(row, col).value
                         actual_raw[day] = '' if raw is None else str(raw).strip()
-                        actuals[day] = parse_int(raw)
+                        actuals[day] = _parse_headcount(raw)
                     classes_text = normalize_text(
                         ws.cell(row, cols['classes']).value) if cols['classes'] else ''
                     model.rooms.append(RoomRow(
@@ -290,7 +326,7 @@ def load_detail(path: str) -> DetailModel:
                         college_total=total if total is not None else (blk.total if blk else None),
                         room=room,
                         classes_text=classes_text,
-                        expected=parse_int(ws.cell(row, cols['expected']).value) if cols['expected'] else None,
+                        expected=_parse_headcount(ws.cell(row, cols['expected']).value) if cols['expected'] else None,
                         actuals=actuals,
                         actual_raw=actual_raw,
                         actual_cols=dict(cols['actuals']),

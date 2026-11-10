@@ -83,21 +83,36 @@ def test_tray_initialization(qapp, main_window):
     assert default_act.font().bold() is True, "「恢复显示」动作字体应为粗体"
 
 
+def test_native_minimize_keeps_taskbar_visibility(qapp, main_window):
+    """测试 2a: 验证原生点击最小化时窗口保留在任务栏不强行隐藏（防止误入隐藏托盘模式）。"""
+    win = main_window
+    win.show()
+    qapp.processEvents()
+    assert win.isVisible() is True
+
+    win.showMinimized()
+    qapp.processEvents()
+    qapp.processEvents()
+
+    assert win.isMinimized() is True
+    assert win.isVisible() is True, "原生最小化应保留在任务栏，不得擅自隐藏"
+
+
 def test_minimize_hides_to_tray(qapp, main_window):
-    """测试 2: 验证点击最小化时主窗口从任务栏隐藏，托盘图标保持可见。"""
+    """测试 2b: 验证主动点击「后台最小化运行」时主窗口隐藏至托盘，托盘图标保持可见。"""
     win = main_window
     win.show()
     qapp.processEvents()
     assert win.isVisible() is True, "窗口初始显示时应可见"
 
-    # 触发最小化
-    win.showMinimized()
+    # 触发显式隐藏至托盘
+    win._minimize_to_tray()
     qapp.processEvents()
     qapp.processEvents()
 
     # 窗口应隐藏（从任务栏脱出），托盘依然可见
-    assert win.isVisible() is False, "最小化后主窗口应从桌面与任务栏隐藏"
-    assert win.tray_icon.isVisible() is True, "最小化后系统托盘图标应保持可见"
+    assert win.isVisible() is False, "进入托盘模式后主窗口应从桌面与任务栏隐藏"
+    assert win.tray_icon.isVisible() is True, "系统托盘图标应保持可见"
 
 
 def test_tray_double_click_restores_window(qapp, main_window):
@@ -106,8 +121,8 @@ def test_tray_double_click_restores_window(qapp, main_window):
     win.show()
     qapp.processEvents()
 
-    # 先最小化隐藏
-    win.showMinimized()
+    # 先隐藏到托盘
+    win._minimize_to_tray()
     qapp.processEvents()
     qapp.processEvents()
     assert win.isVisible() is False, "窗口前置条件必须为隐藏在托盘"
@@ -126,7 +141,7 @@ def test_tray_single_click_trigger_restores_window(qapp, main_window):
     win.show()
     qapp.processEvents()
 
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     qapp.processEvents()
     assert win.isVisible() is False
@@ -145,7 +160,7 @@ def test_tray_context_menu_restore(qapp, main_window):
     win.show()
     qapp.processEvents()
 
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     qapp.processEvents()
     assert win.isVisible() is False
@@ -194,7 +209,7 @@ def test_maximized_window_restores_to_maximized(qapp, main_window):
     assert win.isMaximized() is True
 
     # 触发最小化到托盘
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     qapp.processEvents()
     assert win.isVisible() is False

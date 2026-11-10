@@ -268,6 +268,9 @@ class Calculator:
                          if any(r.row in b.rows for b in blk_list)]
                 total_label = next((b.total for b in blk_list if b.total is not None), None)
                 room_expected_sum = sum(max(r.expected or 0, 0) for r in rooms)
+                expected = total_label
+                if expected is None and rooms and all(r.expected is not None for r in rooms):
+                    expected = room_expected_sum
 
                 day_rates: List[float] = []
                 for day in rate_cols:
@@ -277,7 +280,6 @@ class Calculator:
                     actual_values = [r.actuals.get(day) for r in day_rooms]
 
                     exempt = self.exempt_for(college, day, session)
-                    expected = total_label if total_label is not None else room_expected_sum
                     denominator = (expected - exempt) if expected is not None else None
 
                     anomalies: List[str] = []
@@ -307,7 +309,11 @@ class Calculator:
                                         '按约定留空且不生成出勤率。'
                                         % (len(day_rooms), len(missing)))
                             rate = None
-                        elif denominator is None or denominator <= 0:
+                        elif denominator is None:
+                            status = '应到人数缺失，无法计算'
+                            note = '学院未标注应到总人数，且有教室应到人数缺失。'
+                            rate = None
+                        elif denominator <= 0:
                             status = '分母非正数，无法计算'
                             note = ('学院总应到 %s − 当次总免勤 %d = %s，分母非正，不生成出勤率。'
                                     % (expected, exempt, denominator))
@@ -359,12 +365,14 @@ class Calculator:
                         else:
                             actual_sum = sum(v for _, v in valid_pairs)
                             if missing_rooms:
-                                valid_expected = sum(max(r.expected or 0, 0) for r, _ in valid_pairs)
+                                valid_expected = None
+                                if all(r.expected is not None for r, _ in valid_pairs):
+                                    valid_expected = sum(max(r.expected, 0) for r, _ in valid_pairs)
                                 room_exempts = getattr(self, '_room_exemptions_cache', None)
                                 if room_exempts is None:
                                     room_exempts = self.room_exemptions()
                                 valid_exempt = sum(room_exempts.get((sheet, r.row, day), 0) for r, _ in valid_pairs)
-                                eff_denominator = valid_expected - valid_exempt
+                                eff_denominator = None if valid_expected is None else valid_expected - valid_exempt
                                 eff_expected = valid_expected
                                 eff_exempt = valid_exempt
                             else:

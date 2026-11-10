@@ -46,6 +46,12 @@ hiddenimports = [
     'core.storage',
     'core.exempt_report',
     'core.summary_template',
+    'core.temp_manager',
+    'ui',
+    'ui.theme',
+    'ui.icons',
+    'ui.widgets',
+    'ui.dialogs',
 ]
 
 # 3. Excludes: Heavyweight unused Qt modules and dev/scientific dependencies

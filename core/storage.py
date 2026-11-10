@@ -77,12 +77,8 @@ class AttendanceStorage:
 
     @classmethod
     def resolve_default_db_path(cls) -> str:
-        """解析平台标准用户数据目录或便携目录。"""
-        # 1. 便携模式检测: 若当前目录下有 _work 目录，优先存储在 _work 下
-        if os.path.isdir("_work"):
-            return os.path.join("_work", cls.DEFAULT_DB_FILENAME)
-
-        # 2. 跨平台标准路径检测
+        """解析平台标准用户数据目录。"""
+        # 跨平台标准应用数据路径检测 (严格避免在软件目录产生 _work 残留)
         if sys.platform == "win32":
             base = os.environ.get("LOCALAPPDATA", os.path.expanduser("~\\AppData\\Local"))
             return os.path.join(base, "SanzaoWan", cls.DEFAULT_DB_FILENAME)

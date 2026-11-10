@@ -5,11 +5,15 @@
 """
 from __future__ import annotations
 
-import os
-from typing import Dict, List, Optional, Tuple, Any
+import re
+from contextlib import closing
+from datetime import date, timedelta
+from pathlib import Path
+from typing import Dict, Optional, Tuple
 import openpyxl
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
+from .export import atomic_output, generate_tamper_metadata
+from .parsing import WEEKDAY_NAMES, normalize_text
 
 # 官方标准 15 学院顺序与名称
 STANDARD_COLLEGES: Tuple[str, ...] = (
@@ -31,13 +35,49 @@ STANDARD_COLLEGES: Tuple[str, ...] = (
 )
 
 
+def attendance_period(path, scopes):
+    """优先输出经文件日期锚定的考勤时间，否则标明模板里的星期和时段。"""
+    label = '、'.join(day + session for day, session in scopes)
+    name = normalize_text(Path(path).name)
+    stamp = re.match(r'^\(?(\d{1,2})[.月](\d{1,2})日?\s*\(?\s*(早|晚)', name)
+    term = re.search(r'(20\d{2})\s*年?\s*([春秋]季学期)', name)
+    year = int(term[1]) if term else None
+    academic_term = f'{year}年{term[2]}' if term else ''
+    if stamp and year and scopes:
+        month, day = map(int, stamp.groups()[:2])
+        try:
+            latest = date(year, month, day)
+        except ValueError:
+            latest = None
+        if latest and (WEEKDAY_NAMES[latest.weekday()], stamp[3] + '自习') == scopes[-1]:
+            monday = latest - timedelta(days=latest.weekday())
+            days = [monday + timedelta(days=WEEKDAY_NAMES.index(weekday))
+                    for weekday, _ in scopes]
+            if all(when.year == year for when in days):
+                return academic_term, '考勤时间', '、'.join(
+                    f'{when.month}月{when.day}日{session}' for when, (_, session) in zip(days, scopes))
+    return academic_term, '考勤时段', label
+
+
 def _safe_font(name: str, size: float, bold: bool = False, color: str = "000000") -> Font:
     return Font(name=name, size=size, bold=bold, color=color)
+
+
+def _summary_note(period_label, attendance_dates):
+    date_part = f"\n    {period_label}：{attendance_dates}" if attendance_dates else ""
+    return (
+        f"备注：{date_part}\n"
+        "    学生出勤率=合计实到人次/（合计应到人次−合计有效免勤人次）\n"
+        "    值班辅导员巡查率=学院值班辅导员实际签到次数/学院值班辅导员应签到次数"
+    )
 
 
 def create_blank_summary_workbook(
     week_label: str = "第九周",
     attendance_dates: str = "",
+    *,
+    period_label: str = "考勤时间",
+    academic_term: str = "2026年秋季学期",
 ) -> openpyxl.Workbook:
     """生成 1:1 官方格式的空白汇总表工作簿。"""
     wb = openpyxl.Workbook()
@@ -78,7 +118,7 @@ def create_blank_summary_workbook(
     # 1. 标题行 A1:E1
     ws.merge_cells("A1:E1")
     cell_a1 = ws["A1"]
-    cell_a1.value = f"桂林理工大学2026年秋季学期{week_label}早晚自习执行情况终稿"
+    cell_a1.value = f"桂林理工大学{academic_term}{week_label}早晚自习执行情况终稿"
     cell_a1.font = font_title
     cell_a1.alignment = align_center
 
@@ -120,7 +160,7 @@ def create_blank_summary_workbook(
         c_patrol.number_format = "0.00%"
 
         # 执行效果
-        c_eff = ws.cell(row=row_num, column=5, value="正常")
+        c_eff = ws.cell(row=row_num, column=5)
         c_eff.font = font_data
         c_eff.alignment = align_center
         c_eff.border = cell_border
@@ -128,13 +168,7 @@ def create_blank_summary_workbook(
     # 4. 备注行 A18:E18
     ws.merge_cells("A18:E18")
     cell_note = ws["A18"]
-    date_part = f"\n    考勤时间：{attendance_dates}" if attendance_dates else ""
-    note_text = (
-        f"备注：{date_part}\n"
-        "    学生出勤率=学院实际出勤人次/学院应出勤人次\n"
-        "    值班辅导员巡查率=学院值班辅导员实际签到次数/学院值班辅导员应签到次数"
-    )
-    cell_note.value = note_text
+    cell_note.value = _summary_note(period_label, attendance_dates)
     cell_note.font = font_note
     cell_note.alignment = align_left_top
 
@@ -150,21 +184,17 @@ def fill_summary_workbook(
     college_anomalies: Optional[Dict[str, str]] = None,
     week_label: str = "第九周",
     attendance_dates: str = "",
+    *,
+    academic_term: str = "2026年秋季学期",
 ) -> openpyxl.Workbook:
     """将计算好的出勤率、巡查率与异常说明填入汇总工作簿。"""
     ws = wb["Sheet2"] if "Sheet2" in wb.sheetnames else wb.active
 
     # 更新标题
-    ws["A1"].value = f"桂林理工大学2026年秋季学期{week_label}早晚自习执行情况终稿"
+    ws["A1"].value = f"桂林理工大学{academic_term}{week_label}早晚自习执行情况终稿"
 
-    # 如果有新的考勤时间说明
     if attendance_dates:
-        cell_note = ws["A18"]
-        cell_note.value = (
-            f"备注：\n    考勤时间：{attendance_dates}\n"
-            "    学生出勤率=学院实际出勤人次/学院应出勤人次\n"
-            "    值班辅导员巡查率=学院值班辅导员实际签到次数/学院值班辅导员应签到次数"
-        )
+        ws["A18"].value = _summary_note("考勤时间", attendance_dates)
 
     # 遍历填入
     for r in range(3, 18):
@@ -184,15 +214,10 @@ def fill_summary_workbook(
             p_rate = college_patrol_rates[c_name]
             cell_patrol = ws.cell(r, 4, value=round(p_rate, 4))
             cell_patrol.number_format = "0.00%"
-        elif ws.cell(r, 4).value is None:
-            # 默认 100%
-            ws.cell(r, 4, value=1.0).number_format = "0.00%"
 
         # 3. 执行效果
         if college_anomalies and c_name in college_anomalies and college_anomalies[c_name]:
             ws.cell(r, 5, value=college_anomalies[c_name])
-        elif ws.cell(r, 5).value is None or ws.cell(r, 5).value == "":
-            ws.cell(r, 5, value="正常")
 
     return wb
 
@@ -204,18 +229,16 @@ def generate_summary_file(
     college_anomalies: Optional[Dict[str, str]] = None,
     week_label: str = "第九周",
     attendance_dates: str = "",
+    *,
+    period_label: str = "考勤时间",
+    academic_term: str = "2026年秋季学期",
 ) -> str:
-    """直接生成并保存规范终稿汇总表 Excel 文件。"""
-    wb = create_blank_summary_workbook(week_label=week_label, attendance_dates=attendance_dates)
-    wb = fill_summary_workbook(
-        wb,
-        college_rates=college_rates,
-        college_patrol_rates=college_patrol_rates,
-        college_anomalies=college_anomalies,
-        week_label=week_label,
-        attendance_dates=attendance_dates,
-    )
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    wb.save(output_path)
-    wb.close()
+    """以原子写入保存终稿，缺少数据的字段保留空白。"""
+    with closing(create_blank_summary_workbook(week_label, attendance_dates,
+                                                period_label=period_label, academic_term=academic_term)) as wb:
+        fill_summary_workbook(wb, college_rates, college_patrol_rates, college_anomalies,
+                              week_label, academic_term=academic_term)
+        generate_tamper_metadata(wb, sheet_names=('Sheet2',))
+        with atomic_output(output_path) as temporary:
+            wb.save(temporary)
     return output_path

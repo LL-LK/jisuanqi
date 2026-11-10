@@ -10,25 +10,27 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from zipfile import BadZipFile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core import RunConfig, run          # noqa: E402
 from core.exempt_report import export_exempt_report
-from core.export import check_output_path, verify_workbook_integrity
-from core.io_detail import week_from_label
-from core.pipeline import output_path_for
+from core.export import check_output_path, compare_actuals, verify_workbook_integrity
+from core.io_detail import infer_workbook_week
+from core.pipeline import output_path_for, summary_path_for
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description='三早一晚免勤自动统计系统')
     parser.add_argument('--verify-tamper', default=None, help='校验指定结果 Excel 文件的防篡改签名完整性')
+    parser.add_argument('--against-detail', help='防篡改校验时与可信原始明细逐格核对实到人数')
     parser.add_argument('--detail', required=False, help='执行情况明细表路径')
     parser.add_argument('--exempt', action='extend', nargs='+', default=[], help='一个或多个免勤表路径，可重复使用')
     parser.add_argument('--out', default=None, help='输出文件路径')
     parser.add_argument('--exempt-report', default=None, help='另行输出免勤统计工作簿（.xlsx）')
     parser.add_argument('--week', type=int, choices=range(1, 31), metavar='1–30',
-                        help='统计周次，省略时读取明细文件名中的周次，缺省第 7 周')
+                        help='统计周次，省略时优先读取表内标题，缺省第 7 周')
     parser.add_argument('--source', default='未分类',
                         choices=['全免勤大表', '在线存档', '未分类'],
                         help='免勤表来源分类')
@@ -39,24 +41,40 @@ def main(argv=None) -> int:
     parser.add_argument('--include-exempt-summary', action='store_true', help='将免勤统计一并写入明细结果工作簿')
     args = parser.parse_args(argv)
 
+    if args.against_detail and not args.verify_tamper:
+        parser.error('--against-detail 必须与 --verify-tamper 同时使用')
     if args.verify_tamper:
-        ok, violations = verify_workbook_integrity(args.verify_tamper)
+        try:
+            ok, violations = verify_workbook_integrity(args.verify_tamper)
+            if args.against_detail:
+                changes = compare_actuals(args.against_detail, args.verify_tamper)
+                if changes:
+                    violations.extend(f'{cell} 实到人数与原表不符' for cell in changes)
+                else:
+                    print('实到人数逐格核对通过')
+                ok = ok and not changes
+        except (OSError, ValueError, BadZipFile) as exc:
+            parser.error(str(exc))
         if ok:
-            print('防篡改校验通过：文件未被篡改 (%s)' % args.verify_tamper)
+            print('防篡改校验通过（%s）' % args.verify_tamper)
             return 0
         print('防篡改校验失败，发现 %d 处异常：' % len(violations))
-        for v in violations:
-            print('  - %s' % v)
+        for violation in violations:
+            print('  - %s' % violation)
         return 2
 
     if not args.detail:
         parser.error('the following arguments are required: --detail')
+    try:
+        week = args.week or infer_workbook_week(args.detail) or 7
+    except (OSError, ValueError, BadZipFile) as exc:
+        parser.error(str(exc))
 
     config = RunConfig(
         detail_path=args.detail,
         exempt_paths=tuple(args.exempt),
         output_path=args.out,
-        week_no=args.week or week_from_label(os.path.basename(args.detail)) or 7,
+        week_no=week,
         exempt_source=args.source,
         dictionary_path=args.dictionary,
         campus=args.campus,
@@ -67,7 +85,7 @@ def main(argv=None) -> int:
     if args.exempt_report:
         try:
             check_output_path(args.exempt_report, (config.detail_path, *config.exemption_files,
-                                                   config.dictionary_path, output_path_for(config)))
+                                                   config.dictionary_path, output_path_for(config), summary_path_for(config)))
         except ValueError as exc:
             parser.error(str(exc))
     result = run(config)

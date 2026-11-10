@@ -97,7 +97,8 @@ def export_exempt_report(path, result, rows=None, extra_protected_paths=()):
     """另存免勤汇总，导出范围默认为本次计算的全部行。"""
     if not result.ok:
         raise ValueError('请先完成计算')
-    check_output_path(path, (*result.input_paths, result.output_path, *extra_protected_paths))
+    check_output_path(path, (*result.input_paths, result.output_path, result.summary_output_path,
+                             *extra_protected_paths))
     rows = result.exempt_rows if rows is None else rows
     if not rows:
         raise ValueError('当前没有可导出的免勤统计行')

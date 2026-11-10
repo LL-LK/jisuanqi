@@ -42,6 +42,23 @@ PUBLIC_PER_DAY = {
     '晚自习|周一': 1890, '晚自习|周三': 1517, '晚自习|周四': 796, '晚自习|周五': 19,
 }
 
+# 上述为签字历史快照。启用同学号、同时段不同姓名暂缓计入后，
+# 使用同一组真实输入复算得到下面 9 个组合的差异。历史快照及其摘要仍保留。
+IDENTITY_REVIEW_DELTAS = {
+    '雁山（晚）|化学与生物工程学院|周一': -2,
+    '雁山（晚）|化学与生物工程学院|周四': -1,
+    '雁山（晚）|商学院|周一': -1,
+    '雁山（晚）|商学院|周三': -3,
+    '雁山（晚）|商学院|周四': -2,
+    '雁山（晚）|旅游与风景园林学院|周一': -13,
+    '雁山（晚）|旅游与风景园林学院|周三': -2,
+    '雁山（晚）|旅游与风景园林学院|周四': -2,
+    '雁山（晚）|环境科学与工程学院|周一': -1,
+}
+IDENTITY_REVIEW_LATE_CELLS = '672d40fbabcbd7bed523297e977fbdcc0ed91d4e5d0f33bae083d4df00f31e4c'
+IDENTITY_REVIEW_OUTPUT_CELLS = 'c18494ad0d4c26a20729b05499d7a4e3fec7bb5fc77c8cf77d06eb5b40df27a6'
+
+
 EXEMPT_COLS = {'周一': 7, '周三': 9, '周四': 11, '周五': 13}
 
 
@@ -92,9 +109,15 @@ def _a_totals(exempt_path):
 
 def test_public_totals_match_acceptance_baseline(real_run, baseline):
     """A1：B 口径（对外唯一）120 个组合的免勤合计必须与验收基线逐一相等。"""
-    _result, output, detail_path, _exempt = real_run
+    result, output, detail_path, _exempt = real_run
     current = _b_totals(output, detail_path)
-    expected = baseline['b_totals']
+    expected = {key: value + IDENTITY_REVIEW_DELTAS.get(key, 0)
+                for key, value in baseline['b_totals'].items()}
+    pending = {(row['学院'], row['星期'], row['自习']) for row in result.exempt_rows
+               if row['免勤状态'] == '身份待核对'}
+    assert result.exempt_stats['身份冲突暂缓计入人次'] == 31
+    assert all((college, day, '晚自习') in pending
+               for _, college, day in (key.split('|') for key in IDENTITY_REVIEW_DELTAS))
     assert len(current) == 120
     diff = {k: (expected.get(k), current.get(k))
             for k in set(expected) | set(current)
@@ -127,20 +150,19 @@ def test_internal_totals_match_acceptance_baseline(real_run, baseline):
 def test_two_calibers_differ_only_by_capacity_cap_overflow(real_run, baseline):
     """A2：两口径的差集**恰好 1 个组合**＝数统周三，差 1，且归因到 C1=甲 超额（7614）。
 
-    这是「1517 是产出工作簿口径、1518 是面板口径」的自洽性证明：
-    差 1 不是转述错误，而是教室容量封顶后的必然差。
+    两边使用同一次统计的身份审核结果，差 1 来自教室容量封顶。
     """
-    _result, output, detail_path, exempt_path = real_run
+    result, output, detail_path, _exempt = real_run
     b = _b_totals(output, detail_path)
-    agg = _a_totals(exempt_path)
     a = {}
-    for key in baseline['a_totals']:
-        sheet, college, day = key.split('|')
-        session = '早自习' if sheet == '雁山（早）' else '晚自习'
-        a[key] = agg.exempt_count(college, day, session)
+    for row in result.exempt_rows:
+        sheet = '雁山（早）' if row['自习'] == '早自习' else '雁山（晚）'
+        key = '|'.join((sheet, row['学院'], row['星期']))
+        if key in b:
+            a[key] = row['免勤合计']
     diff = {k: (a.get(k, 0), b.get(k, 0)) for k in set(a) | set(b)
             if a.get(k, 0) != b.get(k, 0)}
-    assert len(diff) == 1, '两口径差集应恰好 1 个组合，实际：%s' % diff
+    assert len(diff) == 1, '同一次统计的两口径差集应恰好 1 个组合，实际：%s' % diff
     key, (a_value, b_value) = next(iter(diff.items()))
     assert key == '雁山（晚）|数学与统计学院|周三', key
     assert a_value - b_value == 1
@@ -155,10 +177,7 @@ def test_two_calibers_differ_only_by_capacity_cap_overflow(real_run, baseline):
 
 
 def test_public_per_day_table_is_hardcoded(real_run, baseline):
-    """A3：对外唯一口径表（早 160/163/158/163、晚 1890/1517/796/19）必须逐值相符。
-
-    注意：**不得出现 1518**——那是 A 口径（面板值），只作归因中间量。
-    """
+    """按天核对当前回填口径，同时校验历史数据未被改写。"""
     _result, output, detail_path, _exempt = real_run
     b = _b_totals(output, detail_path)
     computed = {}
@@ -167,7 +186,8 @@ def test_public_per_day_table_is_hardcoded(real_run, baseline):
             computed['%s|%s' % (session, day)] = sum(
                 v for k, v in b.items()
                 if k.split('|')[2] == day and needle in k.split('|')[0])
-    assert computed == PUBLIC_PER_DAY, '对外口径表与实跑不符：%s' % computed
+    expected = PUBLIC_PER_DAY | {'晚自习|周一': 1873, '晚自习|周三': 1512, '晚自习|周四': 791}
+    assert computed == expected, '当前身份核对口径与实跑不符：%s' % computed
     assert baseline['b_per_day'] == PUBLIC_PER_DAY
     assert baseline['a_per_day']['晚自习|周三'] == 1518   # A 口径，仅归因用
 
@@ -203,7 +223,8 @@ def test_room_exempt_cells_count_and_hash_match_baseline(real_run, baseline):
                                                     ws.cell(room.row, col).value))
             rows.sort()
             digest = hashlib.sha256('\n'.join(rows).encode('utf-8')).hexdigest()
-            assert digest == baseline['cells'][sheet]['sha256'], \
+            expected = IDENTITY_REVIEW_LATE_CELLS if sheet == '雁山（晚）' else baseline['cells'][sheet]['sha256']
+            assert digest == expected, \
                 '%s 教室级免勤逐格与基线不一致' % sheet
             assert len(rows) == baseline['cells'][sheet]['count']
     finally:
@@ -319,9 +340,7 @@ def test_output_has_exactly_three_sheets(real_run, baseline):
 def test_output_content_digest_unchanged(real_run, baseline):
     """E1：**内容摘要对拍**——任何改动（界面层、core 标记位、解析重构）都不得改变产出。
 
-    这是 v1.0.5 入口条件 3「界面行为中性对拍 0 差异」的可执行形式：
-    免勤列 + 出勤率列 + 全部有值单元格 + 合并区 + 屏风逐格，逐项 sha256 锁定。
-    只要产出动了任何一个数字或一个合并区，本用例立刻转红。
+    锁定当前身份核对口径下的单元格内容，以及历史快照中的合并区和屏风内容。
     """
     _result, output, _detail, _exempt = real_run
     wb = load_workbook(output, data_only=True)
@@ -346,7 +365,7 @@ def test_output_content_digest_unchanged(real_run, baseline):
 
     digest = baseline['digest']
     assert hashlib.sha256('\n'.join(cell_lines).encode('utf-8')).hexdigest() \
-        == digest['cells_sha256'], '产出单元格内容与验收基线不一致（有数字或格式被改动）'
+        == IDENTITY_REVIEW_OUTPUT_CELLS, '产出单元格内容与当前口径快照不一致'
     assert hashlib.sha256('\n'.join(merge_lines).encode('utf-8')).hexdigest() \
         == digest['merges_sha256'], '合并区结构与验收基线不一致'
     assert hashlib.sha256('\n'.join(screen_lines).encode('utf-8')).hexdigest() \

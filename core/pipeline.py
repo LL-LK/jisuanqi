@@ -16,13 +16,15 @@ from .calc import Calculator, estimate_source
 from .attendance_summary import export_attendance_summary, load_summary_template
 from .dictionary import Dictionary
 from .exempt_report import append_exempt_report, build_exempt_rows
-from .export import ALLOWED_SHEETS, ExportResult, _same_path, check_output_path, export, unique_workbook_paths
+from .export import (ALLOWED_SHEETS, TAMPER_META_SHEET, ExportResult, _same_path, check_output_path,
+                     export, unique_workbook_paths, verify_workbook_integrity)
 from .io_detail import load_detail
 from .io_exempt import aggregate_exemptions, load_exemptions
 from .model import CollegeRate, CollegeWeeklyRate
-from .parsing import parse_session
+from .parsing import WEEKDAY_NAMES, parse_session
+from .summary_template import attendance_period, generate_summary_file
 
-DEFAULT_OUTPUT_DIR = os.path.join('_work', '输出')
+DEFAULT_OUTPUT_DIR = '考勤统计输出'
 
 
 @dataclass
@@ -41,7 +43,7 @@ class RunConfig:
     include_exempt_summary: bool = False
     db_path: Optional[str] = None          # [M1 新增] 指定数据库路径 (None 表示采用默认路径)
     enable_storage: bool = True            # [M1 新增] 历史记录入库开关 (默认开启)
-    summary_output_path: Optional[str] = None  # 汇总表（执行情况终稿）输出路径，未指定时自动与明细表同目录生成
+    summary_output_path: Optional[str] = None  # 未指定时由主结果文件名派生终稿路径
     # 注：本口径「免勤不封顶」，因此不提供任何封顶开关——
     # 留一个可切到被否口径的旋钮，比没有旋钮更危险。
 
@@ -86,6 +88,10 @@ def output_path_for(config: RunConfig) -> str:
     return os.path.join(out_dir, '%s_第%d周计算结果.xlsx' % (base, config.week_no))
 
 
+def summary_path_for(config: RunConfig) -> str:
+    return config.summary_output_path or os.path.splitext(output_path_for(config))[0] + '_汇总终稿.xlsx'
+
+
 def run(config: RunConfig) -> RunResult:
     """执行一次完整统计。"""
     start_time = time.perf_counter()
@@ -108,6 +114,10 @@ def run(config: RunConfig) -> RunResult:
         check_output_path(output_path, ())
 
         detail = load_detail(config.detail_path)
+        if TAMPER_META_SHEET in detail.sheet_names:
+            valid, violations = verify_workbook_integrity(config.detail_path)
+            if not valid:
+                raise ValueError('输入考勤表完整性校验失败：' + '、'.join(violations[:5]))
         attendance = None
         if not any(detail.blocks_of(sheet) for sheet in ALLOWED_SHEETS[:2]):
             attendance = load_summary_template(config.detail_path)
@@ -120,6 +130,9 @@ def run(config: RunConfig) -> RunResult:
             raise ValueError('请导入至少一份免勤表。确无免勤时，可导入只保留表头的免勤表')
         if not attendance and not any(detail.rate_cols_by_sheet.get(sheet) for sheet in ALLOWED_SHEETS[:2]):
             raise ValueError('明细表内没有可识别的出勤率列，请核对表头')
+        summary_target = None if attendance else summary_path_for(config)
+        if summary_target:
+            check_output_path(summary_target, (*result.input_paths, output_path))
         result.sheets = list(detail.sheet_names)
         for warn in detail.warnings:
             result.anomalies.append(_anomaly('明细表结构提示', 'warn', '明细表', warn))
@@ -213,48 +226,6 @@ def run(config: RunConfig) -> RunResult:
                 append_report=append_report if config.include_exempt_summary else None)
         result.output_path = export_result.output_path
 
-        # ---- 自动基于内置空白模板填写并输出规范终稿汇总表 ----
-        try:
-            from .summary_template import generate_summary_file
-            out_dir = os.path.dirname(output_path) if output_path else ''
-            week_num = getattr(config, 'week_no', 0)
-            week_str = f"第{week_num}周" if week_num else "第九周"
-
-            summary_target = getattr(config, 'summary_output_path', None)
-            if not summary_target and out_dir:
-                summary_target = os.path.join(out_dir, f"桂林理工大学2026年秋季学期{week_str}早晚自习执行情况终稿.xlsx")
-
-            if summary_target:
-                # 统计 15 学院综合出勤率
-                col_overall = {}
-                col_buckets = defaultdict(list)
-                for r in rates:
-                    if getattr(r, 'rate', None) is not None and getattr(r, 'expected', 0) > 0:
-                        col_buckets[r.college].append(r.rate)
-                for c_name, r_list in col_buckets.items():
-                    if r_list:
-                        col_overall[c_name] = sum(r_list) / len(r_list)
-
-                # 收集考勤异常说明
-                col_anom_map = {}
-                for anom in result.anomalies:
-                    scope = anom.get('scope', '')
-                    for c_name in col_overall:
-                        if c_name in scope:
-                            prev = col_anom_map.get(c_name, '')
-                            nt = anom.get('type', '') or anom.get('note', '')
-                            if nt and nt not in prev:
-                                col_anom_map[c_name] = (prev + '；' + nt).strip('；')
-
-                generate_summary_file(
-                    output_path=summary_target,
-                    college_rates=col_overall,
-                    college_anomalies=col_anom_map,
-                    week_label=week_str,
-                )
-                result.summary_output_path = summary_target
-        except Exception as exc:
-            result.anomalies.append(_anomaly('自动生成汇总表终稿跳过', 'info', '汇总模板引擎', str(exc)))
         for name in export_result.removed_sheets:
             result.anomalies.append(_anomaly('已删除多余工作表', 'info', name,
                                              '按规则只保留三张原始工作表'))
@@ -315,6 +286,16 @@ def run(config: RunConfig) -> RunResult:
                     '%s。免勤合计 %d − 已回填 %d − 容量超额 %d = %d 人次。' % (
                         row['回填状态'], row['免勤合计'], row['已回填'],
                         row['容量超额'], row['回填差额'])))
+
+        if summary_target:
+            try:
+                # 容错模式的估算结果仅留在明细，终稿始终采用严格口径。
+                final_rates = rates if not complete_mode else Calculator(
+                    detail, agg, alias=dictionary.college_alias).college_rates()
+                _write_summary(config, summary_target, detail, calc, final_rates)
+                result.summary_output_path = summary_target
+            except (OSError, ValueError) as exc:
+                result.anomalies.append(_anomaly('终稿导出失败', 'warn', '汇总终稿', str(exc)))
 
         # ---- 汇总 ----
         computed = [r for r in rates if r.rate is not None]
@@ -387,6 +368,39 @@ def run(config: RunConfig) -> RunResult:
         result.ok = False
         result.error = '%s: %s' % (type(exc).__name__, exc)
     return result
+
+
+def _write_summary(config, path, detail, calc, rates):
+    scopes = tuple(
+        (day, session) for day in WEEKDAY_NAMES for sheet in ALLOWED_SHEETS[:2]
+        if day in detail.rate_cols_by_sheet.get(sheet, {})
+        if (session := parse_session(sheet)))
+    by_college = defaultdict(dict)
+    for rate in rates:
+        college = calc.exempt_college(rate.college)
+        by_college[college][(rate.day, rate.session)] = rate
+
+    results, notes = {}, {}
+    for college, by_scope in by_college.items():
+        daily = [by_scope.get(scope) for scope in scopes]
+        if not all(rate is not None and rate.rate is not None for rate in daily):
+            notes[college] = '待复核：应统计时段缺实到或有效应到人数'
+            continue
+        if any((college, day, session) in calc.agg.identity_review_scopes
+               or (college, day, session) in calc.agg.incomplete_scopes for day, session in scopes):
+            notes[college] = '待复核：免勤身份或人数待确认'
+            continue
+        denominator = sum(rate.expected - rate.exempt for rate in daily)
+        results[college] = sum(rate.actual for rate in daily) / denominator
+        if any(rate.rate > 1 for rate in daily):
+            notes[college] = '待复核：有时段出勤率超过100%'
+        else:
+            notes[college] = '待填写巡查与执行情况'
+
+    term, label, period = attendance_period(config.detail_path, scopes)
+    generate_summary_file(path, results, college_anomalies=notes,
+                          week_label=f'第{config.week_no}周',
+                          attendance_dates=period, period_label=label, academic_term=term)
 
 
 def _college_writes(detail, calc):

@@ -30,6 +30,8 @@ e2e_report.json
 *.zip
 *.tar.gz
 *.exe
+*.log
+font_selftest.*
 __pycache__/
 *.py[cod]
 .pytest_cache/

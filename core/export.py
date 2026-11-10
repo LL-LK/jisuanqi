@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Dict, List, Optional, Tuple, Union
@@ -25,6 +25,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Si
 from openpyxl.utils import get_column_letter
 
 from .calc import ESTIMATE_RGB, estimate_source
+from .io_detail import actual_cells
 from .model import CollegeRate, DetailModel
 from .parsing import strip_illegal
 
@@ -233,6 +234,8 @@ def generate_tamper_metadata(
     detail: Optional[DetailModel] = None,
     rates: Optional[List[CollegeRate]] = None,
     secret_key: bytes = TAMPER_HMAC_KEY,
+    *,
+    sheet_names=ALLOWED_SHEETS,
 ):
     """生成隐藏防篡改校验工作表 `_系统校验元数据`（veryHidden），写入关键单元格 HMAC-SHA256 签名。"""
     if TAMPER_META_SHEET in wb.sheetnames:
@@ -240,9 +243,10 @@ def generate_tamper_metadata(
 
     ws_meta = wb.create_sheet(TAMPER_META_SHEET)
     ws_meta.sheet_state = 'veryHidden'
-    ws_meta.append(['sheet_name', 'row', 'col', 'val_repr', 'hmac_sha256'])
+    ws_meta.append(['sheet_name', 'row', 'col', 'val_repr', 'hmac_sha256', 'manifest_hmac_sha256'])
+    signatures = []
 
-    for sheet_name in ('雁山（早）', '雁山（晚）'):
+    for sheet_name in sheet_names:
         if sheet_name not in wb.sheetnames:
             continue
         ws = wb[sheet_name]
@@ -252,7 +256,9 @@ def generate_tamper_metadata(
                 val_repr = _canonical_cell_value(val)
                 sig = _compute_cell_hmac(sheet_name, r, c, val_repr, secret_key=secret_key)
                 ws_meta.append([sheet_name, r, c, val_repr, sig])
+                signatures.append(sig)
 
+    ws_meta['F2'] = _compute_cell_hmac(TAMPER_META_SHEET, 0, 0, ''.join(signatures), secret_key)
     return ws_meta
 
 
@@ -265,7 +271,7 @@ def verify_workbook_integrity(
     if isinstance(file_path_or_wb, Workbook):
         wb = file_path_or_wb
     else:
-        wb = load_workbook(file_path_or_wb, data_only=True)
+        wb = load_workbook(file_path_or_wb)
         close_after = True
 
     violations: List[str] = []
@@ -274,41 +280,80 @@ def verify_workbook_integrity(
             return False, [f'缺失防篡改校验元数据表: {TAMPER_META_SHEET}']
 
         ws_meta = wb[TAMPER_META_SHEET]
-        checked_rows = 0
-        for row_idx in range(2, ws_meta.max_row + 1):
-            sheet_name = ws_meta.cell(row_idx, 1).value
-            r = ws_meta.cell(row_idx, 2).value
-            c = ws_meta.cell(row_idx, 3).value
-            expected_repr = ws_meta.cell(row_idx, 4).value or ''
-            expected_sig = ws_meta.cell(row_idx, 5).value or ''
-
-            if not sheet_name or r is None or c is None:
+        signatures = []
+        covered = {}
+        for sheet_name, row, col, _, signature in ws_meta.iter_rows(min_row=2, max_col=5, values_only=True):
+            if not isinstance(sheet_name, str) or type(row) is not int or type(col) is not int or row < 1 or col < 1:
+                violations.append('防篡改元数据存在无效坐标')
                 continue
-            r_int, c_int = int(r), int(c)
-            checked_rows += 1
-
+            signatures.append(str(signature or ''))
+            cells = covered.setdefault(sheet_name, set())
+            if (row, col) in cells:
+                violations.append(f'防篡改元数据坐标重复：{sheet_name}!{get_column_letter(col)}{row}')
+                continue
+            cells.add((row, col))
             if sheet_name not in wb.sheetnames:
-                violations.append(f'工作表缺失: {sheet_name}')
                 continue
+            value = _canonical_cell_value(wb[sheet_name].cell(row, col).value)
+            actual_sig = _compute_cell_hmac(sheet_name, row, col, value, secret_key)
+            if not hmac.compare_digest(actual_sig, str(signature or '')):
+                violations.append(f'{sheet_name}!{get_column_letter(col)}{row} 数据与签名不符')
 
-            ws = wb[sheet_name]
-            actual_val = ws.cell(r_int, c_int).value
-            actual_repr = _canonical_cell_value(actual_val)
-            actual_sig = _compute_cell_hmac(sheet_name, r_int, c_int, actual_repr, secret_key=secret_key)
-
-            if not hmac.compare_digest( str(actual_sig), str(expected_sig) ):
-                coord = f'{get_column_letter(c_int)}{r_int}'
-                violations.append(
-                    f'{sheet_name}!{coord} 数据被篡改（原始摘要值={expected_repr}, 当前值={actual_repr}）'
-                )
-
-        if checked_rows == 0:
+        if not signatures:
             violations.append('防篡改元数据表为空，未包含有效签名记录')
+        if ws_meta['F1'].value is not None:
+            expected = _compute_cell_hmac(TAMPER_META_SHEET, 0, 0, ''.join(signatures), secret_key)
+            if not hmac.compare_digest(expected, str(ws_meta['F2'].value or '')):
+                violations.append('防篡改元数据清单与签名不符')
+        for name in set(covered) | (set(ALLOWED_SHEETS[:2]) & set(wb.sheetnames)):
+            if name not in wb.sheetnames:
+                violations.append(f'工作表缺失：{name}')
+                continue
+            sheet = wb[name]
+            if len(covered.get(name, ())) != sheet.max_row * sheet.max_column:
+                violations.append(f'工作表签名覆盖不完整：{name}')
 
         return len(violations) == 0, violations
     finally:
         if close_after:
             wb.close()
+
+
+def compare_actuals(source_path, result_path):
+    """用可信原表核对实到列，返回有差异的 Excel 坐标。"""
+    with closing(load_workbook(source_path)) as source, closing(load_workbook(result_path)) as result:
+        originals = actual_cells(source)
+        if not originals:
+            raise ValueError('原表没有可识别的雁山实到列')
+        changes = []
+        with _cached_actual_workbooks(source_path, result_path, source, originals) as cached:
+            for (name, row, col), original in originals.items():
+                target = result[name].cell(row, col) if name in result.sheetnames else None
+                if target is not None:
+                    value = target.value
+                    source_cell = source[name].cell(row, col)
+                    if source_cell.data_type == 'f':
+                        source_cached, result_cached = cached
+                        expected = source_cached[name].cell(row, col).value
+                        effective = result_cached[name].cell(row, col).value
+                        if target.data_type == 'f' and value == original and (expected is None or effective == expected):
+                            continue
+                        if target.data_type != 'f' and expected is not None and value == expected:
+                            continue
+                    elif type(value) is type(original) and value == original:
+                        continue
+                changes.append(f'{name}!{get_column_letter(col)}{row}')
+        return changes
+
+
+@contextmanager
+def _cached_actual_workbooks(source_path, result_path, source, originals):
+    if any(source[name].cell(row, col).data_type == 'f' for name, row, col in originals):
+        with closing(load_workbook(source_path, data_only=True)) as source_values, closing(
+                load_workbook(result_path, data_only=True)) as result_values:
+            yield source_values, result_values
+    else:
+        yield None
 
 
 def export(detail_path: str,
@@ -339,7 +384,9 @@ def export(detail_path: str,
         # 既破坏原始数据，也让下游工具读到空值。这里用带缓存的值替换公式。
         frozen = 0
         sanitized = 0
-        if college_exempt is None:
+        originals = actual_cells(wb)
+        formula_actuals = {key for key in originals if wb[key[0]].cell(key[1], key[2]).data_type == 'f'}
+        if college_exempt is None or formula_actuals:
             with open(detail_path, 'rb') as f_values:
                 wb_values = load_workbook(f_values, data_only=True)
             try:
@@ -348,14 +395,19 @@ def export(detail_path: str,
                     ws_v = wb_values[name]
                     for row in ws_f.iter_rows():
                         for cell in row:
+                            key = (name, cell.row, cell.column)
                             if cell.column in detail.protected_cols.get(name, ()):
+                                continue
+                            if college_exempt is not None and key not in formula_actuals:
                                 continue
                             if cell.data_type == 'f':
                                 cached = ws_v.cell(cell.row, cell.column).value
                                 if cached is not None:
                                     cell.value = cached
+                                    if key in formula_actuals:
+                                        originals[key] = cached
                                     frozen += 1
-                            elif isinstance(cell.value, str):
+                            elif key not in originals and isinstance(cell.value, str):
                                 cleaned = strip_illegal(cell.value)
                                 if cleaned != cell.value:
                                     cell.value = cleaned
@@ -451,6 +503,9 @@ def export(detail_path: str,
 
         if append_report:
             append_report(wb)
+        for (sheet, row, col), original in originals.items():
+            if sheet not in wb.sheetnames or wb[sheet].cell(row, col).value != original:
+                raise ValueError(f'导出时实到人数发生变化：{sheet}!{get_column_letter(col)}{row}')
 
         # ---- 6. 写入隐藏防篡改校验元数据表 `_系统校验元数据` ----
         generate_tamper_metadata(wb, detail=detail, rates=rates)

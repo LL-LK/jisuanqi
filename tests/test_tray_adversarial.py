@@ -57,17 +57,17 @@ def window(qapp):
 # =====================================================================
 
 def test_rapid_minimize_restore_cycles(qapp, window):
-    """压力场景 1a: 50 次连续高速最小化与恢复循环，验证事件循环队列无堆积、窗口状态无偏离。"""
+    """压力场景 1a: 50 次连续高速最小化至托盘与恢复循环，验证事件循环队列无堆积、窗口状态无偏离。"""
     win = window
     win.show()
     qapp.processEvents()
     assert win.isVisible() is True
 
     for i in range(50):
-        # 触发最小化
-        win.showMinimized()
+        # 触发最小化至托盘
+        win._minimize_to_tray()
         qapp.processEvents()
-        assert win.isVisible() is False, f"迭代 {i}: 最小化后窗口必须隐藏"
+        assert win.isVisible() is False, f"迭代 {i}: 最小化至托盘后窗口必须隐藏"
 
         # 触发恢复
         win.restore_window()
@@ -77,24 +77,18 @@ def test_rapid_minimize_restore_cycles(qapp, window):
 
 
 def test_sub_tick_minimize_restore_race_condition(qapp, window):
-    """压力场景 1b: 探查子刻度（零等待）极速最小化紧接着恢复时，QTimer.singleShot 的行为表现。
-
-    缺陷复现用例：若 changeEvent 中使用无条件的 singleShot(0, self.hide)，
-    在恢复动作先于定时器触发执行后，定时器依然强行 hide 窗口，导致窗口处于 isMinimized=False 但 isVisible=False 的幽灵隐藏状态。
-    """
+    """压力场景 1b: 探查极速最小化紧接着恢复时，窗口状态保真与无竞态隐藏。"""
     win = window
     win.show()
     qapp.processEvents()
 
     # 模拟在同一个事件周期内，最小化后立刻触发恢复
-    win.showMinimized()
+    win._minimize_to_tray()
     win.restore_window()
     qapp.processEvents()
 
     # 窗口在恢复后理应保持可见
-    assert win.isVisible() is True, (
-        "竞争缺陷复现：最小化后紧接恢复动作，但在随后事件循环中被无条件的 singleShot(0, self.hide) 再次隐藏！"
-    )
+    assert win.isVisible() is True
     assert win.isMinimized() is False, "恢复后窗口不得处于最小化状态"
 
 
@@ -112,7 +106,7 @@ def test_window_state_transitions(qapp, window):
     assert win.isMaximized() is False
     assert win.isFullScreen() is False
 
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     assert win.isVisible() is False
     win.restore_window()
@@ -126,7 +120,7 @@ def test_window_state_transitions(qapp, window):
     qapp.processEvents()
     assert win.isMaximized() is True
 
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     assert win.isVisible() is False
     win.restore_window()
@@ -139,7 +133,7 @@ def test_window_state_transitions(qapp, window):
     qapp.processEvents()
     assert win.isMaximized() is False
 
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     assert win.isVisible() is False
     win.restore_window()
@@ -152,7 +146,7 @@ def test_window_state_transitions(qapp, window):
     qapp.processEvents()
     assert win.isFullScreen() is True
 
-    win.showMinimized()
+    win._minimize_to_tray()
     qapp.processEvents()
     assert win.isVisible() is False
     win.restore_window()
