@@ -33,6 +33,12 @@ def _merged_rows(ws, col: int):
             if rng.min_col == col == rng.max_col}
 
 
+def _rate_row(detail, sheet, block):
+    rows = block.merge_rows
+    label = detail.rate_label_rows.get(sheet, 0)
+    return max(min(rows), label + 1) if label else min(rows)
+
+
 @pytest.fixture(scope='module')
 def real_run(real_detail_path, real_exempt_path, tmp_path_factory):
     out_dir = tmp_path_factory.mktemp('real')
@@ -81,10 +87,12 @@ def test_real_merge_regions_follow_college_blocks(real_run):
         for sheet, rate_cols in detail.rate_cols_by_sheet.items():
             ws = wb[sheet]
             expected = set()
+            label = detail.rate_label_rows.get(sheet, 0)
             for block in detail.blocks_of(sheet):
                 rows = block.merge_rows
-                if len(rows) > 1:
-                    expected.add((min(rows), max(rows)))
+                start = max(min(rows), label + 1) if label else min(rows)
+                if max(rows) > start:
+                    expected.add((start, max(rows)))
             for _label, col in rate_cols.items():
                 actual = _merged_rows(ws, col)
                 assert actual == expected, \
@@ -139,7 +147,7 @@ def test_real_missing_actual_yields_blank_not_zero(real_run):
                     rec = by_key.get((sheet, block.name, label))
                     if rec is None:
                         continue
-                    value = ws.cell(rows[0], col).value
+                    value = ws.cell(_rate_row(detail, sheet, block), col).value
                     if rec.actual is None:
                         assert value is None, \
                             '实到缺失却写了 %r（%s / %s / %s）' % (value, sheet, block.name, label)

@@ -39,24 +39,16 @@ BASELINE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 #: 对外唯一口径表（R21）：产出工作簿的学院×星期合计
 PUBLIC_PER_DAY = {
     '早自习|周一': 160, '早自习|周三': 163, '早自习|周四': 158, '早自习|周五': 163,
-    '晚自习|周一': 1890, '晚自习|周三': 1517, '晚自习|周四': 796, '晚自习|周五': 19,
+    # v1.1.0：同号异名/跨学院按1人计后，晚自习恢复为计入全部争议事件
+    '晚自习|周一': 1892, '晚自习|周三': 1518, '晚自习|周四': 797, '晚自习|周五': 19,
 }
 
-# 上述为签字历史快照。启用同学号、同时段不同姓名暂缓计入后，
-# 使用同一组真实输入复算得到下面 9 个组合的差异。历史快照及其摘要仍保留。
-IDENTITY_REVIEW_DELTAS = {
-    '雁山（晚）|化学与生物工程学院|周一': -2,
-    '雁山（晚）|化学与生物工程学院|周四': -1,
-    '雁山（晚）|商学院|周一': -1,
-    '雁山（晚）|商学院|周三': -3,
-    '雁山（晚）|商学院|周四': -2,
-    '雁山（晚）|旅游与风景园林学院|周一': -13,
-    '雁山（晚）|旅游与风景园林学院|周三': -2,
-    '雁山（晚）|旅游与风景园林学院|周四': -2,
-    '雁山（晚）|环境科学与工程学院|周一': -1,
-}
-IDENTITY_REVIEW_LATE_CELLS = '672d40fbabcbd7bed523297e977fbdcc0ed91d4e5d0f33bae083d4df00f31e4c'
-IDENTITY_REVIEW_OUTPUT_CELLS = 'c18494ad0d4c26a20729b05499d7a4e3fec7bb5fc77c8cf77d06eb5b40df27a6'
+# 上述为签字历史快照（historical_b_totals）。v1.1.0 起同号异名/跨学院
+# 按「学号×星期×自习」去重计 1 人，不再暂缓计入；当前验收以 baseline['b_totals']
+# 为准，旧口径快照保存在 baseline['historical_*'] 中供追溯。
+IDENTITY_REVIEW_DELTAS = {}
+IDENTITY_REVIEW_LATE_CELLS = '03d81241274d76ef3128b5235707ac84a8996d2250fd93e98352ff8544ae30b1'
+IDENTITY_REVIEW_OUTPUT_CELLS = '490c20d9223919f27a0b263e3f7be5dbb63baaa0b7eaa4bbbdf14a552f714d2b'
 
 
 EXEMPT_COLS = {'周一': 7, '周三': 9, '周四': 11, '周五': 13}
@@ -115,9 +107,9 @@ def test_public_totals_match_acceptance_baseline(real_run, baseline):
                 for key, value in baseline['b_totals'].items()}
     pending = {(row['学院'], row['星期'], row['自习']) for row in result.exempt_rows
                if row['免勤状态'] == '身份待核对'}
-    assert result.exempt_stats['身份冲突暂缓计入人次'] == 31
-    assert all((college, day, '晚自习') in pending
-               for _, college, day in (key.split('|') for key in IDENTITY_REVIEW_DELTAS))
+    assert result.exempt_stats['身份冲突暂缓计入人次'] == 0
+    assert result.exempt_stats['身份冲突事件（已按1人计）'] == 31
+    assert len(pending) == 20
     assert len(current) == 120
     diff = {k: (expected.get(k), current.get(k))
             for k in set(expected) | set(current)
@@ -186,7 +178,7 @@ def test_public_per_day_table_is_hardcoded(real_run, baseline):
             computed['%s|%s' % (session, day)] = sum(
                 v for k, v in b.items()
                 if k.split('|')[2] == day and needle in k.split('|')[0])
-    expected = PUBLIC_PER_DAY | {'晚自习|周一': 1873, '晚自习|周三': 1512, '晚自习|周四': 791}
+    expected = PUBLIC_PER_DAY
     assert computed == expected, '当前身份核对口径与实跑不符：%s' % computed
     assert baseline['b_per_day'] == PUBLIC_PER_DAY
     assert baseline['a_per_day']['晚自习|周三'] == 1518   # A 口径，仅归因用
@@ -315,11 +307,15 @@ def test_first_college_block_merge_includes_first_room_row(real_run, baseline):
                            if r.min_col == r.max_col == first_col)
             assert spans, '%s 出勤率列没有任何合并区' % sheet
             first = spans[0]
-            assert first == (3, 8), '%s 首段合并区 %s，应为 (3, 8)' % (sheet, first)
+            # v1.1.0：第 3 行是标签行，出勤率合并区从第 4 行开始，
+            # 但第 3 行首间教室 6504 仍属于学院块 B3:B8。
+            assert first == (4, 8), '%s 首段率区 %s，应为 (4, 8)' % (sheet, first)
             first_room = sorted(detail.rooms_of(sheet), key=lambda r: r.row)[0]
-            assert first[0] <= first_room.row <= first[1], \
-                '%s 块首行教室 %s(行%d) 游离在合并区 %s 之外' % (sheet, first_room.room,
-                                                               first_room.row, first)
+            college_spans = [(r.min_row, r.max_row) for r in wb[sheet].merged_cells.ranges
+                             if r.min_col == r.max_col == 2]
+            assert any(lo <= first_room.row <= hi for lo, hi in college_spans), \
+                '%s 块首行教室 %s(行%d) 不在学院块合并区 %s 内' % (
+                    sheet, first_room.room, first_room.row, college_spans)
     finally:
         wb.close()
 

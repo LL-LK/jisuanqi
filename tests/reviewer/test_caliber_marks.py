@@ -35,6 +35,13 @@ def _anomalies(result, kind):
     return [a for a in result.anomalies if a.get('type') == kind]
 
 
+def _rate_row(detail, sheet, block):
+    """出勤率写入行：有标签行时从标签行下一行开始，否则取块首行。"""
+    rows = block.merge_rows
+    label = detail.rate_label_rows.get(sheet, 0)
+    return max(min(rows), label + 1) if label else min(rows)
+
+
 # ------------------------------------------------------------------ R1 估算标记
 
 #: R17 固化的估算标记色值（与 core/export.py 的 ESTIMATE_FILL 同源）
@@ -142,7 +149,7 @@ def test_rate_cells_are_not_marked_as_estimated(real_run):
                 if not rows:
                     continue
                 for _label, col in rate_cols.items():
-                    cell = ws.cell(rows[0], col)
+                    cell = ws.cell(_rate_row(detail, sheet, block), col)
                     assert not (cell.font is not None and cell.font.italic), \
                         '%s 出勤率格被误标为估算' % sheet
                     checked += 1
@@ -206,7 +213,7 @@ def test_missing_actual_is_truly_blank_in_export(real_run):
                     rec = by_key.get((sheet, block.name, label))
                     if rec is None or rec.actual is not None:
                         continue
-                    value = ws.cell(rows[0], col).value
+                    value = ws.cell(_rate_row(detail, sheet, block), col).value
                     assert value is None, \
                         '实到缺失却写了 %r（%s / %s / %s）' % (value, sheet, block.name, label)
                     blanks += 1
@@ -339,10 +346,14 @@ def test_first_block_room_is_inside_merge_region(real_run):
             first_col = min(detail.rate_cols_by_sheet[sheet].values())
             spans = sorted((r.min_row, r.max_row) for r in ws.merged_cells.ranges
                            if r.min_col == r.max_col == first_col)
+            assert spans[0] == (4, 8), \
+                '%s 首段率区 %s，应为 (4, 8)（第3行保留星期标签）' % (sheet, spans[0])
             first_room = sorted(detail.rooms_of(sheet), key=lambda r: r.row)[0]
-            assert spans[0][0] <= first_room.row <= spans[0][1], \
-                '%s 块首行教室 %s(行%d) 不在合并区 %s 内' % (sheet, first_room.room,
-                                                           first_room.row, spans[0])
+            college_spans = [(r.min_row, r.max_row) for r in ws.merged_cells.ranges
+                             if r.min_col == r.max_col == 2]
+            assert any(lo <= first_room.row <= hi for lo, hi in college_spans), \
+                '%s 块首行教室 %s(行%d) 不在学院块合并区 %s 内' % (
+                    sheet, first_room.room, first_room.row, college_spans)
     finally:
         wb.close()
 
@@ -393,7 +404,7 @@ def test_late_friday_trace_cells_are_marked_and_excluded(real_run):
             rows = block.merge_rows
             if not rows:
                 continue
-            cell = ws.cell(rows[0], avg_col)
+            cell = ws.cell(_rate_row(detail, '雁山（晚）', block), avg_col)
             if cell.value is None:
                 continue
             days = [d for d in ('周一', '周三', '周四')
