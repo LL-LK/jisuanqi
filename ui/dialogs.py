@@ -272,7 +272,8 @@ class StudentDrilldownDialog(QDialog):
         layout.addLayout(filter_bar)
 
         self.table = QTableView()
-        self.columns = ['序号', '学号', '姓名', '学院', '专业班级', '星期', '自习', '教室', '来源', '申请理由']
+        self.columns = ['序号', '学号', '姓名', '学院', '专业班级', '星期', '自习', '教室', '来源',
+                        '理由分类', '申请理由']
         self._update_table(self.raw_students)
         layout.addWidget(self.table, 1)
 
@@ -305,6 +306,7 @@ class StudentDrilldownDialog(QDialog):
                 '自习': s.get('session', ''),
                 '教室': s.get('room', ''),
                 '来源': s.get('source_ref', ''),
+                '理由分类': s.get('reason_category', '未分类'),
                 '申请理由': s.get('reason', ''),
             })
         model = _GenericTableModel(self.columns, rows)

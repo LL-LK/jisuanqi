@@ -91,7 +91,7 @@ from PySide6.QtWidgets import (
 
 from core import RunConfig, run, __version__ as APP_VERSION
 from core.calc import ESTIMATE_RGB
-from core.dictionary import Dictionary, load_tables, save_tables
+from core.dictionary import Dictionary, default_tables, load_tables, save_tables
 from core.exempt_report import COLLEGE_REPORT_COLUMNS, REPORT_COLUMNS, export_exempt_report
 from core.export import _same_path, atomic_output, check_output_path, unique_workbook_paths
 from core.io_detail import infer_workbook_week
@@ -383,6 +383,9 @@ class MainWindow(QMainWindow):
     def _show_empty_state(self):
         if hasattr(self, 'summary_stack') and hasattr(self, 'empty_state_card'):
             self.summary_stack.setCurrentWidget(self.empty_state_card)
+        if hasattr(self, 'conflict_banner'):
+            self.conflict_banner.setVisible(False)
+            self.conflict_banner.clear()
         self.summary_view.setPlainText(
             '等待计算\n\n'
             '1. 拖入执行情况明细表，再添加一份或多份免勤表。\n'
@@ -444,13 +447,22 @@ class MainWindow(QMainWindow):
         header.addWidget(self.privacy_btn)
         outer.addLayout(header)
 
-        # 2. 置顶四联排核心流水线 (明细表 + 免勤表 + 开始计算 + 结果工作簿)
+        # 2. 固定位置的身份争议提示条：只在存在同号异名/跨学院记录时显示，
+        #    位于 Header 与四联排之间，切换页签也保持可见。
+        self.conflict_banner = QLabel('')
+        self.conflict_banner.setObjectName('conflictBanner')
+        self.conflict_banner.setTextFormat(Qt.PlainText)
+        self.conflict_banner.setWordWrap(True)
+        self.conflict_banner.setVisible(False)
+        outer.addWidget(self.conflict_banner)
+
+        # 3. 置顶四联排核心流水线 (明细表 + 免勤表 + 开始计算 + 结果工作簿)
         outer.addWidget(self._build_top_pipeline())
 
-        # 3. 底部全宽自适应工作区 (完全取消左右分割栏，0 上下拖动)
+        # 4. 底部全宽自适应工作区 (完全取消左右分割栏，0 上下拖动)
         outer.addWidget(self._build_tabs(), 1)
 
-        # 4. 进度条与状态行
+        # 5. 进度条与状态行
         self.progress = QProgressBar()
         self.progress.setRange(0, 0)
         self.progress.setVisible(False)
@@ -718,6 +730,7 @@ class MainWindow(QMainWindow):
         self.chk_append_sheets.setToolTip('默认不勾选，严格仅保留「雁山（早）」「雁山（晚）」「屏风」原始三张表。')
         form.addRow('附加工作表', self.chk_append_sheets)
         self.dict_edit = QLineEdit(default_dictionary_path())
+        self.dict_edit.editingFinished.connect(self._load_dictionary_if_changed)
         btn_dict = QPushButton('浏览…')
         btn_dict.setIcon(ActionIcon.get('folder_open', TOKENS['colors']['text']))
         btn_dict.setIconSize(QSize(16, 16))
@@ -1035,6 +1048,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, '选择免勤词典文件', self.dict_edit.text() or '', 'Excel 文件 (*.xlsx)')
         if path:
             self.dict_edit.setText(path)
+            self._load_dictionary_if_changed()
 
     def _open_output_dir(self):
         self.result_slot.open_btn.click()
@@ -1069,6 +1083,9 @@ class MainWindow(QMainWindow):
         )
 
         self._run_start_time = datetime.now()
+        if hasattr(self, 'conflict_banner'):
+            self.conflict_banner.setVisible(False)
+            self.conflict_banner.clear()
         self._set_busy(True)
         self.progress.setVisible(True)
         self.progress.setFormat('正在计算第 %d 周…' % self.week_spin.value())
@@ -1163,12 +1180,16 @@ class MainWindow(QMainWindow):
         self.chk_college_exempt.setChecked(False)
         self.chk_append_sheets.setChecked(False)
         self.dict_edit.setText(default_dictionary_path())
+        self._load_dictionary_if_changed()
         self.out_edit.setText('')
         self._refresh_output_preview()
         ToastNotification(self, '设置已恢复默认', kind='info')
 
     def _on_failed(self, message):
         self._last_error_trace = message
+        if hasattr(self, 'conflict_banner'):
+            self.conflict_banner.setVisible(False)
+            self.conflict_banner.clear()
         self._set_status('计算失败，请查看错误详情', kind='error')
         StatusDialog.show_error(self, '计算失败', '统计计算过程发生异常。',
                                 advice='请检查明细表与免勤表格式是否完整，或点击下方查看技术细节。',
@@ -1225,6 +1246,39 @@ class MainWindow(QMainWindow):
                 % total)
             self._set_status('计算完成 · 没有纳入免勤记录，请复核概览。', 'warn')
 
+    def _update_conflict_banner(self, result):
+        """在固定位置显示身份/免勤争议提示。
+
+        新口径：同号异名或跨学院记录不再暂缓计入，而是按
+        （学号, 星期, 自习）去重计 1 人；这里只负责把争议固定告警出来。
+        """
+        if not hasattr(self, 'conflict_banner'):
+            return
+        stats = getattr(result, 'exempt_stats', {}) or {}
+        conflicts = int(stats.get('同学号身份冲突', 0) or 0)
+        events = int(stats.get('身份冲突事件（已按1人计）', 0) or 0)
+        incomplete = int(stats.get('占位学号待补人数记录', 0) or 0)
+        unknown = int(stats.get('学院待核对记录', 0) or 0)
+        if not (conflicts or incomplete or unknown):
+            self.conflict_banner.clear()
+            self.conflict_banner.setVisible(False)
+            return
+
+        parts = []
+        if conflicts:
+            parts.append(f'发现 {conflicts} 组同号异名/跨学院记录'
+                         f'（{events} 个「学号×星期×自习」事件已按 1 人计）')
+        if incomplete:
+            parts.append(f'{incomplete} 条记录缺少免勤人数')
+        if unknown:
+            parts.append(f'{unknown} 条记录学院待核对')
+        tail = '；出勤率已按去重后的有效免勤正常计算。请到结果工作簿「免勤核对」页核对来源行。'
+        if incomplete or unknown:
+            tail = ('；同号异名/跨学院记录已按 1 人计并正常计算；'
+                    '待补人数/学院待核对记录请补齐后复核。详见「免勤核对」。')
+        self.conflict_banner.setText('⚠ 身份与免勤争议：' + '；'.join(parts) + tail)
+        self.conflict_banner.setVisible(True)
+
     def _render(self, result):
         self.result = result
         self._filter_exempt_rows()
@@ -1240,6 +1294,8 @@ class MainWindow(QMainWindow):
                 label.setText(f'{value:,}')
             else:
                 label.setText(str(value))
+
+        self._update_conflict_banner(result)
 
         lines = ['统计详情 · %s' % datetime.now().strftime('%Y-%m-%d %H:%M:%S'), '']
         for item in anomalies:
@@ -1461,26 +1517,51 @@ class MainWindow(QMainWindow):
                                    model.index(max(model.rowCount() - 1, 0),
                                                max(model.columnCount() - 1, 0)))
 
+    def _load_dictionary_if_changed(self):
+        path = self.dict_edit.text().strip() or default_dictionary_path()
+        if path != getattr(self, '_dictionary_editor_path', None):
+            self._load_dictionary()
+
     def _load_dictionary(self):
         raw_path = self.dict_edit.text().strip() or default_dictionary_path()
-        tables = load_tables(raw_path if os.path.exists(raw_path) else None)
+        self._dictionary_editor_path = raw_path
+        invalid = False
+        try:
+            tables = load_tables(raw_path if os.path.exists(raw_path) else None, strict=True)
+        except ValueError as exc:
+            tables = default_tables()
+            invalid = True
+            self._set_status(str(exc), 'warn')
+        else:
+            try:
+                Dictionary(tables)
+            except ValueError as exc:
+                self._set_status(str(exc), 'warn')
         while self.dict_tabs.count():
+            previous = self.dict_tabs.widget(0)
             self.dict_tabs.removeTab(0)
+            previous.deleteLater()
         self.dict_tables = {}
         for name, rows in tables.items():
             table = _DictTableWidget(name, rows)
             self.dict_tabs.addTab(table, name)
             self.dict_tables[name] = table
 
-        self.btn_save_dict = QPushButton('保存词典')
-        self.btn_save_dict.setCursor(Qt.PointingHandCursor)
-        self.btn_save_dict.setIcon(ActionIcon.get('save_disk', TOKENS['colors']['primary_dark']))
-        self.btn_save_dict.setIconSize(QSize(16, 16))
-        self.btn_save_dict.clicked.connect(self._save_dictionary)
-        self.dict_tabs.setCornerWidget(self.btn_save_dict, Qt.TopRightCorner)
+        if not hasattr(self, 'btn_save_dict'):
+            self.btn_save_dict = QPushButton('保存词典')
+            self.btn_save_dict.setCursor(Qt.PointingHandCursor)
+            self.btn_save_dict.setIcon(ActionIcon.get('save_disk', TOKENS['colors']['primary_dark']))
+            self.btn_save_dict.setIconSize(QSize(16, 16))
+            self.btn_save_dict.clicked.connect(self._save_dictionary)
+            self.dict_tabs.setCornerWidget(self.btn_save_dict, Qt.TopRightCorner)
+        self.btn_save_dict.setEnabled(not invalid)
 
     def _save_dictionary(self):
         raw_path = self.dict_edit.text().strip() or default_dictionary_path()
+        if raw_path != self._dictionary_editor_path:
+            self._load_dictionary()
+            self._set_status('已切换词典，请核对当前规则后再保存。', 'warn')
+            return
         meipass = getattr(sys, '_MEIPASS', None)
         path = raw_path
         if meipass and os.path.normcase(os.path.abspath(path)).startswith(
@@ -1490,9 +1571,14 @@ class MainWindow(QMainWindow):
             path = os.path.join(user_writable_dir(), DICT_NAME)
         tables = {name: table.rows() for name, table in self.dict_tables.items()}
         try:
+            protected = self._current_input_paths()
+            if self.result:
+                protected = (*protected, self.result.output_path, self.result.summary_output_path)
+            check_output_path(path, protected)
             save_tables(path, tables)
             if path != raw_path:
                 self.dict_edit.setText(path)
+            self._dictionary_editor_path = path
         except Exception as exc:
             QMessageBox.critical(self, '保存失败', str(exc))
             return

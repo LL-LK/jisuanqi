@@ -101,9 +101,10 @@ def _effective_header(ws, row: int, col: int) -> str:
 def _detect_rate_cols(ws, header_row: int, actual_days):
     """找出出勤率区各列：'周一' '周三' '周四' '周五' '平均' → 列号。
 
-    返回 (cols, excluded)：
+    返回 (cols, excluded, inferred_row)：
       * cols     参与合并区重建与出勤率写入的列
       * excluded 被明确排除的**非出勤率指标列**（R14 逐列实证的留痕）
+      * inferred_row 需要保留的独立出勤率子表头行
 
     R14：范围**不得硬编码** N..R / N..Q，必须按列标题逐列反查：
       * 出勤率区的列范围 = 主表头合并区（如 N2:R2 / N2:Q2）
@@ -128,8 +129,8 @@ def _detect_rate_cols(ws, header_row: int, actual_days):
             merged_header = True
             break
 
-    # 最新版模板的子表头是空的，但仍留有独立的一行及完整的出勤率合并标题。
-    # 只有列数与实际星期数加一完全一致、空格下一行是率区纵向合并的起点时才补列名。
+    # 子表头可与首间教室同处一行。以完整的率区合并标题和下一行的纵向合并定位，
+    # 兼容留空的模板和两种平均列标题。
     label_row = header_row + 1
     rate_columns = range(start_col, end_col + 1)
     labels = [normalize_text(ws.cell(label_row, col).value) for col in rate_columns]
@@ -139,13 +140,16 @@ def _detect_rate_cols(ws, header_row: int, actual_days):
     merge_starts = {r.min_col for r in ws.merged_cells.ranges
                     if r.min_col == r.max_col and r.min_row == label_row + 1}
     inferred_row = None
-    expected_labels = [*actual_days, '周平均']
-    if (merged_header and actual_days and dedicated_row and len(labels) == len(expected_labels)
-            and set(rate_columns) <= merge_starts
-            and (not any(labels) or labels == expected_labels)):
-        labels = [*actual_days, '平均']
-        inferred_row = label_row
-    elif not any(label in RATE_BLOCK_LABELS for label in labels):
+    if labels[-1] == '周平均':
+        labels[-1] = '平均'
+    if (merged_header and actual_days and dedicated_row and set(rate_columns) <= merge_starts):
+        if not any(labels) and len(labels) == len(actual_days) + 1:
+            labels = [*actual_days, '平均']
+            inferred_row = label_row
+        elif (len(labels) > 1 and labels[-1] == '平均'
+              and len(set(labels)) == len(labels) and set(labels[:-1]) <= set(actual_days)):
+            inferred_row = label_row
+    if inferred_row is None and not any(label in RATE_BLOCK_LABELS for label in labels):
         for row in range(label_row + 1, min(header_row + 4, ws.max_row) + 1):
             candidate = [normalize_text(ws.cell(row, col).value) for col in rate_columns]
             if candidate[0] in RATE_BLOCK_LABELS:

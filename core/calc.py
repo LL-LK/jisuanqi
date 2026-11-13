@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .io_exempt import Aggregate
 from .model import CollegeBlock, CollegeRate, DetailModel, RoomRow
-from .parsing import match_class_to_room_classes, parse_session
+from .parsing import match_class_to_room_classes, parse_session, strip_spaces
 
 DAYS = ('周一', '周三', '周四', '周五')
 
@@ -79,7 +79,7 @@ def room_sort_key(room: str):
 
 
 def _college_key(name: str) -> str:
-    return ''.join(str(name).split())
+    return strip_spaces(name)
 
 
 class Calculator:
@@ -115,7 +115,7 @@ class Calculator:
         for name in detail_colleges:
             if name in exempt_colleges:
                 continue
-            target = self.alias.get(name)
+            target = self.alias.get(_college_key(name))
             if target and target in exempt_colleges:
                 self._name_map[name] = target
                 continue

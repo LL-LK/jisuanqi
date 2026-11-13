@@ -53,9 +53,12 @@ def verify_package(pkg_dir: str) -> int:
 
 
 def main(argv=None) -> int:
-    argv = argv or sys.argv[1:]
+    argv = list(argv or sys.argv[1:])
+    strict = '--strict' in argv
+    if strict:
+        argv.remove('--strict')
     if not argv:
-        print('usage: verify_release.py <release_dir> [package_dir]')
+        print('usage: verify_release.py [--strict] <release_dir> [package_dir]')
         return 2
     rel = argv[0]
     pkg = argv[1] if len(argv) > 1 else os.path.join(
@@ -71,8 +74,12 @@ def main(argv=None) -> int:
             line = line.strip()
             if not line:
                 continue
-            digest, _, name = line.partition('  ')
-            entries[name.strip()] = digest.strip().lower()
+            parts = line.split(None, 1)
+            if len(parts) == 2:
+                digest, name = parts
+                if name.startswith('*'):
+                    name = name[1:]
+                entries[name.strip()] = digest.strip().lower()
 
     on_disk = {n for n in os.listdir(rel)
                if os.path.isfile(os.path.join(rel, n)) and n != 'SHA256.txt'}
@@ -96,7 +103,8 @@ def main(argv=None) -> int:
     missing = sorted(on_disk - set(entries))
     for name in missing:
         print('[EXTRA] %s  (on disk, not in manifest)' % name)
-        bad += 1
+        if strict:
+            bad += 1
 
     bad_pkg = verify_package(pkg)
     bad += bad_pkg

@@ -421,6 +421,10 @@ class AttendanceStorage:
             cur.execute(query, params)
             return [dict(row) for row in cur.fetchall()]
 
+    def list_runs(self, limit: int = 30) -> List[Dict[str, Any]]:
+        """列出最近的历史计算批次记录。"""
+        return self.query_runs(limit=limit)
+
     def get_run(self, run_id: int) -> Optional[Dict[str, Any]]:
         """获取单个计算批次的详细信息。"""
         with self._lock, self._get_connection() as conn:

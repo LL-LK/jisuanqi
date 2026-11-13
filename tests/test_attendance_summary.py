@@ -48,15 +48,16 @@ def test_summary_uses_reported_sessions_and_checks_identity(tmp_path):
                            exempt_paths=(str(first), str(second))))
     assert result.ok, result.error
     assert result.exempt_stats['同学号身份冲突'] == 1
-    assert result.exempt_stats['身份冲突暂缓计入人次'] == 1
+    assert result.exempt_stats['身份冲突事件（已按1人计）'] == 1
+    assert result.exempt_stats['身份冲突暂缓计入人次'] == 0
     assert result.exempt_stats['学院待核对记录'] == 1
     assert result.exempt_stats['不在汇总考勤时段的记录'] == 1
-    assert result.exempt_stats['重复申请事件'] == 1
+    assert result.exempt_stats['重复申请事件'] == 2
     assert not result.college_rates
     with closing(load_workbook(target, data_only=True)) as book:
         sheet = book.worksheets[0]
         assert [sheet[cell].value for cell in ('C3', 'D3', 'E3', 'K3')] == [0.92, 1, '人工记录', '其他列']
-        assert [sheet[cell].value for cell in ('F3', 'G3', 'H3', 'I3')] == [3, 1, 4, '待核对']
+        assert [sheet[cell].value for cell in ('F3', 'G3', 'H3', 'I3')] == [4, 1, 5, '待核对']
         assert {'学院免勤统计', '汇总与口径', '免勤核对'} <= set(book.sheetnames)
         review = list(book['免勤核对'].values)
         assert any('免勤表2' in source for _, source, _ in review[1:])

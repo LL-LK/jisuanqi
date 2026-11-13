@@ -174,6 +174,17 @@ def _segment_facts(seg: str, default_kind: str, window_week: Optional[int] = Non
     # 0. 修正常见五笔/拼音录入笔误（如 '第为周' -> '第九周'）
     text = text.replace('第为周', '第9周')
 
+    if default_kind == 'TIME':
+        def _calendar_day(match):
+            try:
+                when = date(*map(int, match.groups()))
+            except ValueError:
+                return
+            weekdays.add(WEEKDAY_NAMES[when.weekday()])
+        text = _mask(
+            text, r'(?<!\d)(20\d{2})[-年](\d{1,2})[-月](\d{1,2})(?:日)?'
+            r'(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?(?!\d)', _calendar_day)
+
     # ① 星期区间：'周一到周五' / '本周一到下周日'（必须展开，否则漏周二/周三/周四）
     def _span(m):
         weekdays.update(_weekday_span(m.group(1), m.group(2)))
@@ -269,7 +280,7 @@ def _segment_facts(seg: str, default_kind: str, window_week: Optional[int] = Non
         if default_kind == 'WEEK':
             if d <= MAX_WEEK_NO:
                 weeks.add(d)
-        elif d <= 7:
+        elif 1 <= d <= 7:
             weekdays.add(WEEKDAY_NAMES[d - 1])
 
     # ⑩ '全学期' / '本学期' / '整学期' / '一学期' → 覆盖统计窗口周（裁定 R4）
@@ -437,19 +448,16 @@ def normalize_campus(text, custom_map: Optional[dict] = None) -> str:
     raw = strip_spaces(text)
     if not raw:
         return '待确认'
-    if custom_map:
-        if raw in custom_map:
-            return custom_map[raw]
-        for k, v in custom_map.items():
-            if k and k in raw:
-                return v
-    if '屏风' in raw:
-        return '屏风'
+    if custom_map and raw in custom_map:
+        return custom_map[raw]
+    matches = {value for alias, value in (custom_map or {}).items() if alias and alias in raw}
+    if '屏风' in raw or '屏峰' in raw:
+        matches.add('屏风')
     if '雁山' in raw or '燕山' in raw or '㕍山' in raw:
-        return '雁山'
+        matches.add('雁山')
     if '雁门' in raw:
-        return '雁门'
-    return '待确认'
+        matches.add('雁门')
+    return next(iter(matches)) if len(matches) == 1 else '待确认'
 
 
 def parse_college_label(text):
@@ -573,6 +581,32 @@ def parse_sessions(text, fallback_session: Optional[str] = None, time_hint: str 
     if '晚' in hint:
         return ('晚自习',)
     return (None,)
+
+
+def session_pairs(session_text, week_text, time_text, pairs, fallback_session, window_week):
+    """保留同一段内的星期与早晚对应关系。混排不清楚时交人工核对。"""
+    sessions = parse_sessions(session_text, fallback_session, time_text)
+    time = normalize_text(time_text)
+    time_sessions = parse_sessions(time)
+    if len(time_sessions) != 2 or (strip_spaces(session_text) and len(sessions) != 2):
+        return [(session, pairs) for session in sessions]
+    parts = re.split(r'[,，;；、\r\n]+|(?<=[早晚习])(?=(?:周|星期|礼拜)[一二三四五六日天1-7])',
+                     str(time_text or ''))
+    tagged = [(part, parse_sessions(part)) for part in parts if normalize_text(part)]
+    if all(tags in ((None,), time_sessions) for _, tags in tagged):
+        # 时间栏只提供了统一的「早晚」范围，没有不同星期的单独时段。
+        return [(session, pairs) for session in time_sessions]
+    by_session = {}
+    for part, tags in tagged:
+        scoped, _ = resolve_pairs(week_text, part, window_week)
+        scoped &= pairs
+        if not scoped or tags == (None,):
+            return [(None, pairs)]
+        for session in tags:
+            by_session.setdefault(session, set()).update(scoped)
+    if not by_session or set().union(*by_session.values()) != pairs:
+        return [(None, pairs)]
+    return list(by_session.items())
 
 
 def normalize_room(text) -> str:

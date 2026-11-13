@@ -21,7 +21,7 @@ from .export import (ALLOWED_SHEETS, TAMPER_META_SHEET, ExportResult, _same_path
 from .io_detail import load_detail
 from .io_exempt import aggregate_exemptions, load_exemptions
 from .model import CollegeRate, CollegeWeeklyRate
-from .parsing import WEEKDAY_NAMES, parse_session
+from .parsing import WEEKDAY_NAMES, normalize_campus, parse_session
 from .summary_template import attendance_period, generate_summary_file
 
 DEFAULT_OUTPUT_DIR = '考勤统计输出'
@@ -74,6 +74,8 @@ class RunResult:
     summary_template_rates: List[Dict] = field(default_factory=list)
     college_names: Dict[str, str] = field(default_factory=dict)
     storage_run_id: Optional[int] = None
+    phase_durations: Dict[str, int] = field(default_factory=dict)
+    duration_ms: int = 0
 
 
 def _anomaly(kind: str, level: str, scope: str, note: str) -> Dict:
@@ -100,6 +102,10 @@ def run(config: RunConfig) -> RunResult:
         if not config.detail_path or not os.path.exists(config.detail_path):
             raise FileNotFoundError('找不到自习执行情况明细表：%s' % config.detail_path)
 
+        campus = normalize_campus(config.campus)
+        if campus != '雁山':
+            raise ValueError('当前考勤模板只计算雁山校区，不能将其他校区免勤扣入雁山应到人数')
+
         exempt_paths = config.exemption_files
         result.input_paths = tuple(os.path.abspath(path) for path in
                                    (config.detail_path, *exempt_paths, config.dictionary_path)
@@ -118,6 +124,10 @@ def run(config: RunConfig) -> RunResult:
             valid, violations = verify_workbook_integrity(config.detail_path)
             if not valid:
                 raise ValueError('输入考勤表完整性校验失败：' + '、'.join(violations[:5]))
+        t_preflight_end = time.perf_counter()
+        preflight_ms = int((t_preflight_end - start_time) * 1000)
+
+        t_parse_start = t_preflight_end
         attendance = None
         if not any(detail.blocks_of(sheet) for sheet in ALLOWED_SHEETS[:2]):
             attendance = load_summary_template(config.detail_path)
@@ -146,7 +156,7 @@ def run(config: RunConfig) -> RunResult:
         identity_check = bool(result.college_exempt or exempt_paths)
         target_names = ([college for _, college, _ in attendance.rows] if attendance else
                         list(dict.fromkeys(block.name for block in detail.blocks if block.name)))
-        result.college_names = {name: _canonical_college(name, dictionary) for name in target_names}
+        result.college_names = {name: dictionary.exact_college(name) for name in target_names}
         if attendance and len(set(result.college_names.values())) != len(attendance.rows):
             raise ValueError('汇总表有重复学院或学院别名指向同一学院，请核对后重试')
 
@@ -165,16 +175,18 @@ def run(config: RunConfig) -> RunResult:
                 raise ValueError(f'{os.path.basename(path)}：{exc}') from exc
         if identity_check:
             for record in records:
-                record.college = _canonical_college(record.college, dictionary)
+                record.college = dictionary.exact_college(record.college)
         agg = aggregate_exemptions(
-            records, config.week_no, campus=config.campus, identity_check=identity_check,
+            records, config.week_no, campus=campus, identity_check=identity_check,
             attendance_scopes=set(attendance.scopes) if attendance else None,
             allowed_colleges=set(result.college_names.values()) if identity_check else None)
 
-        for item in agg.anomalies:
-            result.anomalies.append(_anomaly(item['type'], item['level'],
-                                             item.get('scope', ''), item.get('note', '')))
+        result.anomalies.extend(agg.anomalies)
 
+        t_parse_end = time.perf_counter()
+        parse_ms = int((t_parse_end - t_parse_start) * 1000)
+
+        t_calc_start = t_parse_end
         complete_mode = getattr(config, 'complete_mode', None)
         if complete_mode is None:
             complete_mode = dictionary.params.get('出勤率完整计算模式', '0') == '1'
@@ -192,20 +204,32 @@ def run(config: RunConfig) -> RunResult:
         rates = calc.college_rates()
         for rate in rates:
             scope = (calc.exempt_college(rate.college), rate.day, rate.session)
+            if scope in agg.rule_review_scopes:
+                if rate.status == '完整':
+                    rate.status = '免勤规则待核对'
+                rate.note += ' 该时段有校区、集体人数或考勤时段待核对。'
             if scope in agg.identity_review_scopes:
                 if rate.status == '完整':
-                    rate.status = '免勤身份待核对'
-                rate.note += ' 该时段有身份待核对的免勤记录。'
+                    rate.status = '已计算（身份争议按1人计）'
+                rate.note += (' 该时段有同号异名/跨学院争议，已按同一学号·同一天·同一自习去重计 1 人；'
+                              '出勤率照常计算，请核对「免勤核对」来源行。')
         averages = calc.average_rates(rates)
         result.weekly_rates = _weekly_rates(rates, averages)
         summary_scopes = ({(college, day, session) for college in result.college_names.values()
                            for day, session in attendance.scopes} if attendance else None)
         result.exempt_rows = build_exempt_rows(calc, room_exempt, rates, bool(exempt_paths),
                                                college_exempt, summary_scopes=summary_scopes)
+
+        t_calc_end = time.perf_counter()
+        calc_ms = int((t_calc_end - t_calc_start) * 1000)
+
+        t_export_start = t_calc_end
         mode = ('学院汇总' if result.college_exempt else
                 '班级推定后分摊' if config.match_classes else '教室号匹配后比例分摊')
         report_info = {'统计周次': config.week_no, '免勤回填口径': mode,
-                       '导入免勤表数': len(exempt_paths)}
+                       '导入免勤表数': len(exempt_paths),
+                       '空白校区默认值': dictionary.params.get('空白校区默认值', '雁山'),
+                       '按默认校区参与筛选的记录': agg.campus_defaulted_records}
         def append_report(book):
             append_exempt_report(book, result.exempt_rows, result.college_exempt, report_info,
                                  agg.anomalies if identity_check else ())
@@ -296,6 +320,8 @@ def run(config: RunConfig) -> RunResult:
                 result.summary_output_path = summary_target
             except (OSError, ValueError) as exc:
                 result.anomalies.append(_anomaly('终稿导出失败', 'warn', '汇总终稿', str(exc)))
+        t_export_end = time.perf_counter()
+        export_ms = int((t_export_end - t_export_start) * 1000)
 
         # ---- 汇总 ----
         computed = [r for r in rates if r.rate is not None]
@@ -309,6 +335,7 @@ def run(config: RunConfig) -> RunResult:
                 + agg.outside_attendance_records + agg.unknown_college_records),
             '因周次不符过滤': agg.week_filtered,
             '因校区过滤': agg.campus_filtered,
+            '空白校区按词典默认值计入筛选的记录': agg.campus_defaulted_records,
             '唯一学号数': agg.unique_sids,
             '重复申请事件': agg.duplicate_events,
             '集体免勤申请': agg.group_applications,
@@ -324,8 +351,11 @@ def run(config: RunConfig) -> RunResult:
             '跨学院重复申请事件': agg.cross_college_conflicts,
             '不在汇总考勤时段的记录': agg.outside_attendance_records,
             '学院待核对记录': agg.unknown_college_records,
+            '按班级核对学院记录': agg.college_matched_by_class,
             '按姓名学院班级核对学号': agg.name_matched_records,
             '同学号身份冲突': agg.identity_conflicts,
+            '身份冲突事件（已按1人计）': getattr(agg, 'identity_conflict_events', 0),
+            # 兼容旧报告字段：新口径不再暂缓计入，固定为 0。
             '身份冲突暂缓计入人次': agg.held_identity_events,
         }
         result.summary = {
@@ -350,6 +380,13 @@ def run(config: RunConfig) -> RunResult:
         result.ok = True
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
+        result.duration_ms = duration_ms
+        result.phase_durations = {
+            'preflight_ms': preflight_ms,
+            'parse_ms': parse_ms,
+            'calc_ms': calc_ms,
+            'export_ms': export_ms,
+        }
 
         # ---- M1 数据持久化入库 Hook ----
         if getattr(config, 'enable_storage', True):
@@ -367,6 +404,7 @@ def run(config: RunConfig) -> RunResult:
     except Exception as exc:                      # noqa: BLE001 - 界面需要展示原因
         result.ok = False
         result.error = '%s: %s' % (type(exc).__name__, exc)
+        result.duration_ms = int((time.perf_counter() - start_time) * 1000)
     return result
 
 
@@ -386,14 +424,24 @@ def _write_summary(config, path, detail, calc, rates):
         if not all(rate is not None and rate.rate is not None for rate in daily):
             notes[college] = '待复核：应统计时段缺实到或有效应到人数'
             continue
-        if any((college, day, session) in calc.agg.identity_review_scopes
-               or (college, day, session) in calc.agg.incomplete_scopes for day, session in scopes):
-            notes[college] = '待复核：免勤身份或人数待确认'
-            continue
+        identity_pending = any(
+            (college, day, session) in calc.agg.identity_review_scopes
+            for day, session in scopes)
+        review_pending = any(
+            (college, day, session) in calc.agg.incomplete_scopes
+            or (college, day, session) in calc.agg.rule_review_scopes
+            for day, session in scopes)
         denominator = sum(rate.expected - rate.exempt for rate in daily)
         results[college] = sum(rate.actual for rate in daily) / denominator
+        flags = []
+        if identity_pending:
+            flags.append('身份争议已按1人计')
+        if review_pending:
+            flags.append('免勤人数/适用范围待确认')
         if any(rate.rate > 1 for rate in daily):
-            notes[college] = '待复核：有时段出勤率超过100%'
+            flags.append('有时段出勤率超过100%')
+        if flags:
+            notes[college] = '；'.join(flags) + '；请核对「免勤核对」来源行'
         else:
             notes[college] = '待填写巡查与执行情况'
 
@@ -417,11 +465,6 @@ def _college_writes(detail, calc):
     return values
 
 
-def _canonical_college(name, dictionary):
-    key = ''.join(name.split())
-    return dictionary.college_alias.get(key, key)
-
-
 def _summary_totals(template, agg, college_names):
     totals = {}
     for _, name, _ in template.rows:
@@ -435,7 +478,8 @@ def _summary_totals(template, agg, college_names):
                 early += count
             else:
                 late += count
-            needs_review |= scope in agg.identity_review_scopes or scope in agg.incomplete_scopes
+            needs_review |= (scope in agg.identity_review_scopes or scope in agg.incomplete_scopes
+                             or scope in agg.rule_review_scopes)
         totals[name] = early, late, needs_review
     return totals
 

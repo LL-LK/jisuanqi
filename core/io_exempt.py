@@ -24,8 +24,8 @@ from openpyxl import load_workbook
 from .model import ExemptRecord
 from .parsing import (extract_group_size, is_group_application, normalize_class,
                       normalize_campus, normalize_room, normalize_text,
-                      parse_int, parse_session, parse_sessions, parse_weekdays, parse_weeks,
-                      resolve_pairs, strip_spaces)
+                      parse_int, parse_session, parse_weekdays, parse_weeks,
+                      resolve_pairs, session_pairs, strip_spaces)
 
 _HEADER_HINTS = ('学号', '免勤周次')
 _ROOM_HEADER_KEYS = ('教室号', '所在教室', '教室')
@@ -148,6 +148,9 @@ def load_exemptions(path: str, source: str = '未分类',
     records: List[ExemptRecord] = []
     campus_map = getattr(dictionary, 'campus_alias', None) if dictionary else None
     class_map = getattr(dictionary, 'class_alias', None) if dictionary else None
+    params = getattr(dictionary, 'params', {}) if dictionary else {}
+    blank_campus = params.get('空白校区默认值', '雁山')
+    classify_reason = getattr(dictionary, 'reason_class_of', None)
     with open(path, 'rb') as f:
         wb = load_workbook(f, data_only=True)
         try:
@@ -172,12 +175,13 @@ def load_exemptions(path: str, source: str = '未分类',
                     class_text = normalize_text(cell('class'))
                     reason = normalize_text(cell('reason'))
                     week_text = normalize_text(cell('week'))
-                    time_text = normalize_text(cell('time'))
+                    raw_time = cell('time')
+                    time_text = normalize_text(raw_time)
                     raw_campus = cell('campus')
                     campus = normalize_campus(raw_campus, custom_map=campus_map)
-                    if campus == '待确认' and not strip_spaces(raw_campus) and (sid_raw or college or class_text):
-                        campus = '雁山'
-                    sessions = parse_sessions(cell('session'), fallback_session=sheet_session, time_hint=time_text)
+                    campus_defaulted = not strip_spaces(raw_campus) and blank_campus != '待确认'
+                    if campus_defaulted:
+                        campus = blank_campus
                     room1 = normalize_room(cell('room'))
                     room2 = normalize_room(cell('room2'))
 
@@ -188,11 +192,16 @@ def load_exemptions(path: str, source: str = '未分类',
                         continue
                     if not keep_unassigned and not college and not class_text:
                         continue
-                    if not college and class_text:
-                        if any(k in class_text for k in ('服设', '服装', '数媒', '数字媒体', '动画', '产品', '环艺', '环设', '首饰')):
-                            college = '艺术学院'
-
-                    group_size = extract_group_size(name) or extract_group_size(class_text)
+                    group_like = is_group_application(name, class_text)
+                    group_size = None
+                    if not sid_raw or is_placeholder_sid(sid_raw):
+                        group_size = extract_group_size(name) or extract_group_size(class_text)
+                    class_label = class_text
+                    if not class_label and group_like and re.search(r'\d+\s*班', name):
+                        class_label = name
+                    class_key = normalize_class(class_label, custom_map=class_map)
+                    if strip_spaces(class_label) in ('全班', '全体学生', '全体', '集体', '无', '待定', '-', '/'):
+                        class_key = ''
                     # 没有「共N人」的集体申请不构成集体申请：它既不覆盖同班个人，
                     # 也不能按 1 人计——按「免勤不完整（待补人数）」挂起。
                     whole_term = bool(re.search(r'(?:全|本|整|一)学期', f'{week_text} {time_text}'))
@@ -205,31 +214,30 @@ def load_exemptions(path: str, source: str = '未分类',
                     if not weekdays and pairs_set:
                         weekdays = {d for (_w, d) in pairs_set}
 
-                    # 支持单格内用逗号/顿号填写的多名无学号学生（如 '梁烨霞，余文霞，...'）自动拆分为独立个人记录
-                    if (not sid_raw and not group_size and not is_group_application(name, class_text)
-                            and name and any(sep in name for sep in (',', '、'))):
-                        sub_names = [n.strip() for n in re.split(r'[,、]+', name) if n.strip()]
-                        if len(sub_names) >= 2 and all(2 <= len(n) <= 5 for n in sub_names):
-                            name_entries = [(f'NOSID:{college}:{normalize_class(class_text)}:{n}', n, True, '姓名班级合成键') for n in sub_names]
-                        else:
-                            name_entries = [(sid_raw, name, sid_ok, sid_kind)]
-                    else:
-                        name_entries = [(sid_raw, name, sid_ok, sid_kind)]
-
-                    for cur_sid, cur_name, cur_sid_ok, cur_sid_kind in name_entries:
-                        for session in sessions:
+                    # 分行后按同一身份流程核对，避免和另一份表中的带学号申请重复计入。
+                    names = [name]
+                    if not sid_raw and not group_size and not group_like:
+                        candidates = [normalize_student_name(n) for n in re.split(r'[,、]+', name)]
+                        if len(candidates) > 1 and all(re.fullmatch(r'[\u4e00-\u9fff·]{2,8}', n) for n in candidates):
+                            names = candidates
+                    window = week_no if week_no is not None else 7
+                    sessions = session_pairs(cell('session'), week_text, raw_time,
+                                             pairs_set, sheet_session, window)
+                    category = classify_reason(reason) if classify_reason else '未分类'
+                    for cur_name in names:
+                        for session, scoped_pairs in sessions:
                             if session == '晚自习' and room2:
                                 room = room2
                             else:
                                 room = room1 or room2
                             records.append(ExemptRecord(
-                                sid=cur_sid,
+                                sid=sid_raw,
                                 name=cur_name,
                                 college=college,
                                 class_text=class_text,
-                                class_key=normalize_class(class_text or cur_name, custom_map=class_map),
-                                weeks=weeks,
-                                weekdays=weekdays,
+                                class_key=class_key,
+                                weeks={week for week, _ in scoped_pairs} if scoped_pairs != pairs_set else weeks,
+                                weekdays={day for _, day in scoped_pairs} if scoped_pairs else weekdays,
                                 session=session,
                                 campus=campus,
                                 room=room,
@@ -237,13 +245,15 @@ def load_exemptions(path: str, source: str = '未分类',
                                 group_size=group_size,
                                 source=source,
                                 row=row,
-                                sid_ok=cur_sid_ok,
-                                sid_kind=cur_sid_kind,
-                                placeholder=is_placeholder_sid(cur_sid),
-                                sid_padded='补零' in (cur_sid_kind or ''),
+                                sid_ok=sid_ok,
+                                sid_kind=sid_kind,
+                                placeholder=is_placeholder_sid(sid_raw),
+                                sid_padded='补零' in (sid_kind or ''),
                                 whole_term=whole_term,
-                                pairs=frozenset(pairs_set),
-                                group_like=is_group_application(cur_name, class_text),
+                                pairs=frozenset(scoped_pairs),
+                                group_like=group_like,
+                                campus_defaulted=campus_defaulted,
+                                reason_category=category,
                                 source_ref=(f'免勤表{source_number} / 工作表{sheet_number} / 第{row}行'
                                             if source_number else ''),
                             ))
@@ -269,6 +279,8 @@ class Aggregate:
         self.invalid_records = 0
         self.week_filtered = 0
         self.campus_filtered = 0
+        self.campus_defaulted_records = 0
+        self.rule_review_scopes = set()
         self.group_applications = 0
         self.unique_sids = 0
         self.unmatched_week = 0
@@ -285,8 +297,13 @@ class Aggregate:
         self.anomalies: List[dict] = []
         self.outside_attendance_records = 0
         self.unknown_college_records = 0
+        self.college_matched_by_class = 0
         self.identity_conflicts = 0
+        # 历史字段：旧口径下“暂缓计入”的事件数。新口径按 1 人计，固定为 0，
+        # 仅保留字段以兼容旧报告/数据库读取。
         self.held_identity_events = 0
+        # 新口径：存在同号异名/跨学院争议、但已按“学号×星期×自习”去重计 1 人的事件数。
+        self.identity_conflict_events = 0
         self.name_matched_records = 0
         self.identity_review_scopes = set()
         self.unknown_college_scopes = set()
@@ -370,7 +387,7 @@ def _audit_personal_identities(records, days_by_record, agg):
         by_sid[rec.sid].append((rec, name, days))
         resolved.append((rec, days))
 
-    held = set()
+    contested = set()
     for sid, entries in by_sid.items():
         colleges = {rec.college for rec, _, _ in entries}
         names = {name for _, name, _ in entries if name}
@@ -385,17 +402,18 @@ def _audit_personal_identities(records, days_by_record, agg):
                 if name:
                     name_by_event[event].add(name)
                 if len(colleges) > 1:
-                    held.add(event)
-        held.update(event for event, values in name_by_event.items() if len(values) > 1)
+                    contested.add(event)
+        contested.update(event for event, values in name_by_event.items() if len(values) > 1)
         refs = list(dict.fromkeys(rec.source_ref or f'第{rec.row}行' for rec, _, _ in entries))
         agg.anomalies.append({
             'type': '学号对应学院或姓名冲突', 'level': 'warn',
             'scope': '、'.join(sorted(colleges)) + ' / ' + '；'.join(refs[:8]),
             'review_ref': '；'.join(refs[:8]),
-            'note': '同学号跨学院的记录、同一时段姓名冲突的记录暂不计入。仅跨时段姓名有异的记录按学号计入并标为待核对。',
+            'note': '同学号跨学院或同一时段姓名冲突的记录，按同一学号·同一天·同一自习去重计 1 人；'
+                    '来源行供核对，不再暂缓计入。',
         })
-    agg.held_identity_events = len(held)
-    return resolved, held
+    agg.identity_conflict_events = len(contested)
+    return resolved, contested
 
 
 def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str = '雁山',
@@ -408,13 +426,21 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
     agg = Aggregate()
     agg.total_records = len(records)
 
+    # 仅用本周同校区且已有明确学院的同一班级建立归属证据。
+    colleges_by_class = defaultdict(set)
+    if identity_check and allowed_colleges is not None:
+        for rec in records:
+            if (rec.class_key and rec.campus == campus and not rec.campus_defaulted
+                    and rec.college in allowed_colleges and rec.days_for(week_no)):
+                colleges_by_class[rec.class_key].add(rec.college)
+
     # 先收集集体申请（它们决定哪些个人申请被覆盖）
     group_records: List[ExemptRecord] = []
     personal_records: List[ExemptRecord] = []
     days_by_record = {}
 
     for rec in records:
-        if rec.campus != campus:
+        if rec.campus not in (campus, '待确认'):
             agg.campus_filtered += 1
             continue
         if not rec.weeks and not rec.whole_term:
@@ -443,8 +469,24 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
         if not active_days:
             agg.week_filtered += 1
             continue
+        if rec.campus == '待确认':
+            agg.campus_filtered += 1
+            sessions = (rec.session,) if rec.session else ('早自习', '晚自习')
+            agg.rule_review_scopes.update((rec.college, day, session)
+                                          for day in active_days for session in sessions)
+            agg.anomalies.append({
+                'type': '校区待核对', 'level': 'warn',
+                'scope': f'{rec.college} / {rec.source_ref or rec.row}',
+                'review_ref': rec.source_ref,
+                'note': '校区未填或有多个可能归属，暂不计入。请核对原表。',
+            })
+            continue
+        if rec.campus_defaulted:
+            agg.campus_defaulted_records += 1
         if identity_check and not rec.session:
             agg.invalid_records += 1
+            agg.rule_review_scopes.update((rec.college, day, session) for day in active_days
+                                          for session in ('早自习', '晚自习'))
             agg.anomalies.append({
                 'type': '自习时段无法识别', 'level': 'warn',
                 'scope': f'{rec.college} / {rec.source_ref or rec.row}',
@@ -457,6 +499,16 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
             if not active_days:
                 agg.outside_attendance_records += 1
                 continue
+        candidates = colleges_by_class.get(rec.class_key, ())
+        if not rec.college and len(candidates) == 1:
+            rec = replace(rec, college=next(iter(candidates)))
+            agg.college_matched_by_class += 1
+            agg.anomalies.append({
+                'type': '学院按班级核对', 'level': 'info',
+                'scope': f'{rec.college} / {rec.source_ref or rec.row}',
+                'review_ref': rec.source_ref,
+                'note': '原表学院空白。同周同校区的同一班级在其他有效行中只对应一个学院，已采用该学院。',
+            })
         if allowed_colleges is not None and rec.college not in allowed_colleges:
             agg.unknown_college_records += 1
             agg.unknown_college_scopes.update((rec.college, day, rec.session) for day in active_days)
@@ -469,7 +521,16 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
             continue
         days_by_record[id(rec)] = active_days
         size = rec.group_size or 0
-        if size > 0:
+        if size > 0 and not rec.class_key:
+            agg.invalid_records += 1
+            agg.rule_review_scopes.update((rec.college, day, rec.session or '') for day in active_days)
+            agg.anomalies.append({
+                'type': '集体申请缺班级', 'level': 'warn',
+                'scope': f'{rec.college} / {rec.source_ref or rec.row}',
+                'review_ref': rec.source_ref,
+                'note': '无法判断该申请覆盖的班级，暂不计入，也不会覆盖个人免勤。',
+            })
+        elif size > 0:
             group_records.append(rec)
         elif (rec.sid and not rec.placeholder) or (identity_check and rec.name and not rec.is_incomplete):
             personal_records.append(rec)
@@ -531,11 +592,16 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
             else:
                 # 同一班级同日同自习多条集体申请：取较大声明人数，并记异常
                 agg.duplicate_events += 1
+                if rec.group_size != prev.group_size:
+                    agg.rule_review_scopes.add((rec.college, day, rec.session or ''))
+                refs = '；'.join(dict.fromkeys(ref for ref in (prev.source_ref, rec.source_ref) if ref))
                 agg.anomalies.append({
                     'type': '集体免勤重复申报',
                     'level': 'warn',
                     'scope': f'{rec.college} / {rec.class_text} / {day} / {rec.session}',
-                    'note': '同一班级同一天同一次自习存在多条集体免勤声明，已取较大值',
+                    'review_ref': refs,
+                    'note': ('同一班级同时段申报人数不一致，暂按较大值，正式汇总待复核。'
+                             if rec.group_size != prev.group_size else '同一班级同时段重复申报，同一人数只计一次。'),
                 })
                 if (rec.group_size or 0) > (prev.group_size or 0):
                     group_index[key] = rec
@@ -567,15 +633,15 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
     room_of: Dict[Tuple[str, str, str], Dict[str, str]] = defaultdict(dict)
     global_seen: Dict[Tuple[str, str, str], str] = {}
     if identity_check:
-        person_days, held = _audit_personal_identities(personal_records, days_by_record, agg)
+        person_days, _contested = _audit_personal_identities(personal_records, days_by_record, agg)
+        # 新口径：争议只做标记，不丢弃。后续仍按 (学号, 星期, 自习) 去重，
+        # 同一事件最多计 1 人；跨学院同号由 global_seen 只计首次出现的学院。
+        agg.held_identity_events = 0
     else:
         person_days = [(rec, days_by_record[id(rec)]) for rec in personal_records]
-        held = set()
     for rec, days in sorted(person_days, key=lambda item: (item[0].college, item[0].sid, item[0].row)):
         session = rec.session or ''
         for day in days:
-            if (rec.sid, day, session) in held:
-                continue
             gkey = (rec.college, rec.class_key, day, session)
             if gkey in group_index:
                 agg.covered_personal += 1
@@ -648,6 +714,7 @@ def aggregate_exemptions(records: List[ExemptRecord], week_no: int, campus: str 
                     'class_text': rec.class_text,
                     'class_key': rec.class_key,
                     'reason': rec.reason,
+                    'reason_category': rec.reason_category,
                     'room': rm,
                     'row': rec.row,
                     'campus': rec.campus,

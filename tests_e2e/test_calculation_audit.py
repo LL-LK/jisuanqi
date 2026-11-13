@@ -129,3 +129,32 @@ def test_desktop_button_runs_the_source_pipeline(qapp, tmp_path, monkeypatch,
     assert Path(window.result.output_path).is_file()
     assert Path(window.result.summary_output_path).is_file()
     window.deleteLater()
+
+
+def test_switch_dictionary_loads_selected_rules_before_save(qapp, tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+    from PySide6.QtWidgets import QFileDialog
+
+    import app
+    from core.dictionary import Dictionary, default_tables, save_tables
+
+    first, second = tmp_path / '词典甲.xlsx', tmp_path / '词典乙.xlsx'
+    for target, alias in ((first, '甲别名'), (second, '乙别名')):
+        tables = default_tables()
+        tables['学院别名'].append(['土木工程学院', alias, '测试'])
+        save_tables(target, tables)
+    before = first.read_bytes()
+    monkeypatch.setattr(app, 'default_dictionary_path', lambda: str(first))
+    monkeypatch.setattr(app.MainWindow, '_settings', lambda self: QSettings(
+        str(tmp_path / 'test.ini'), QSettings.Format.IniFormat))
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName', lambda *_: (str(second), 'Excel 文件'))
+
+    window = app.MainWindow()
+    assert any(row[1] == '甲别名' for row in window.dict_tables['学院别名'].rows())
+    window._pick_dict()
+    assert any(row[1] == '乙别名' for row in window.dict_tables['学院别名'].rows())
+    window._save_dictionary()
+    assert Dictionary.load(second).exact_college('乙别名') == '土木工程学院'
+    assert Dictionary.load(second).exact_college('甲别名') == '甲别名'
+    assert first.read_bytes() == before
+    window.deleteLater()

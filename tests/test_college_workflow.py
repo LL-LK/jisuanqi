@@ -12,7 +12,7 @@ from core.exempt_report import export_exempt_report
 from core.io_detail import load_detail, week_from_label
 
 
-def make_template(path):
+def make_template(path, average_label=None, extra_actual_day=False):
     with closing(Workbook()) as wb:
         sheet = wb.active
         sheet.title = '雁山（早）'
@@ -26,6 +26,10 @@ def make_template(path):
         sheet.append([2, '理学院（60人）', '8201', '', 60, 30])
         for area in ('J2:L2', 'B3:B5', 'G3:G5', 'I3:I5', 'J4:J5', 'K4:K5', 'L4:L5', 'M3:M5'):
             sheet.merge_cells(area)
+        if average_label is not None:
+            sheet['J3'], sheet['K3'], sheet['L3'] = '周一', '周三', average_label
+        if extra_actual_day:
+            sheet['P2'] = '周五'
         sheet['M3'] = '=1+2'
         sheet['N4'] = '人工记录'
         sheet['O4'] = '已巡查'
@@ -34,9 +38,12 @@ def make_template(path):
         wb.save(path)
 
 
-def test_college_template_and_multiple_exemption_files(tmp_path):
+@pytest.mark.parametrize(('average_label', 'extra_actual_day'), [
+    (None, False), ('平均', False), ('周平均', False), ('平均', True),
+])
+def test_college_template_and_multiple_exemption_files(tmp_path, average_label, extra_actual_day):
     detail = tmp_path / '第八周明细表.xlsx'
-    make_template(detail)
+    make_template(detail, average_label, extra_actual_day)
     first = tmp_path / '一批免勤.xlsx'
     second = tmp_path / '二批免勤.xlsx'
     out = tmp_path / '结果.xlsx'
@@ -76,7 +83,9 @@ def test_college_template_and_multiple_exemption_files(tmp_path):
     with closing(load_workbook(out)) as wb:
         assert [s for s in wb.sheetnames if s not in ('_系统校验元数据', '免勤核对')] == ['雁山（早）', '屏风']
         sheet = wb['雁山（早）']
-        assert [sheet.cell(3, col).value for col in range(10, 13)] == ['周一', '周三', '周平均']
+        assert [sheet.cell(3, col).value for col in range(10, 13)] == [
+            '周一', '周三', average_label or '周平均']
+        assert {'J4:J5', 'K4:K5', 'L4:L5'} <= {str(area) for area in sheet.merged_cells.ranges}
         assert sheet['G3'].value == 41
         assert sheet['I3'].value == 1
         assert sheet['G4'].value is None

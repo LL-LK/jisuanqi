@@ -14,8 +14,12 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+from core import __version__  # noqa: E402
+
 REL = os.path.join(ROOT, '发布版')
 MANIFEST = 'SHA256.txt'
 
@@ -25,6 +29,7 @@ ITEMS = [
     (os.path.join(ROOT, '使用说明.md'), '使用说明.md'),
     (os.path.join(ROOT, 'README.md'), 'README.md'),
     (os.path.join(ROOT, '隐私扫描报告.md'), '隐私扫描报告.md'),
+    (os.path.join(ROOT, 'docs', f'RELEASE_NOTES_v{__version__}.md'), '发布说明.md'),
 ]
 
 

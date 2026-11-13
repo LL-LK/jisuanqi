@@ -100,6 +100,8 @@ class ExemptRecord:
     pairs: frozenset = frozenset()   # {(周次:int, 星期:str)} 段内配对结果
     group_like: bool = False     # 写法像整班申请（但可能没写人数）
     source_ref: str = ''
+    campus_defaulted: bool = False
+    reason_category: str = '未分类'
 
     def days_for(self, week_no: int) -> set:
         """该记录在指定周次窗口内命中的星期集合。

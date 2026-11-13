@@ -271,6 +271,11 @@ QLabel#statusBar { color:%(text_strong)s; background:%(card)s; border:1px solid 
 QLabel#statusBar[state="warn"] { border-left:4px solid %(warn_fg)s; color:%(warn_fg)s; background:#FFFDF7; }
 QLabel#statusBar[state="error"] { border-left:4px solid %(danger)s; color:%(danger)s; background:#FFF8F8; }
 QLabel#statusBar[state="success"] { border-left:4px solid %(green_fg)s; color:%(green_fg)s; background:#F4FAF8; }
+QLabel#conflictBanner {
+    color:%(warn_fg)s; background:#FFF6DC; border:1px solid #E3B95E;
+    border-left:4px solid %(warn_fg)s; border-radius:8px; padding:8px 12px;
+    font-size:12px; font-weight:600;
+}
 
 QStatusBar { background:%(card)s; color:%(text_strong)s; border-top:1px solid %(divider)s; }
 

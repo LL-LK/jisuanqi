@@ -420,3 +420,30 @@ class TestToastNotifications:
         assert len(win._active_toasts) == 0
         leaked = [c for c in win.children() if isinstance(c, ToastNotification)]
         assert len(leaked) == 0
+
+
+class TestConflictWarningBanner:
+    """身份争议固定提示条：有争议时显示，无争议时隐藏。"""
+
+    def test_banner_shows_identity_conflict_once(self, qapp, main_window):
+        win = main_window
+        result = RunResult(
+            exempt_stats={"同学号身份冲突": 2, "身份冲突事件（已按1人计）": 3},
+            anomalies=[],
+        )
+        win._update_conflict_banner(result)
+        qapp.processEvents()
+        assert win.conflict_banner.isVisible()
+        text = win.conflict_banner.text()
+        assert '2 组' in text
+        assert '3 个' in text
+        assert '按 1 人计' in text
+        assert '免勤核对' in text
+
+    def test_banner_hidden_without_conflict(self, qapp, main_window):
+        win = main_window
+        win._update_conflict_banner(RunResult(exempt_stats={"同学号身份冲突": 0,
+                                                            "身份冲突事件（已按1人计）": 0},
+                                              anomalies=[]))
+        qapp.processEvents()
+        assert not win.conflict_banner.isVisible()

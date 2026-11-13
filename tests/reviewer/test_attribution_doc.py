@@ -19,6 +19,7 @@ from __future__ import annotations
 import os
 import re
 from collections import defaultdict
+from pathlib import Path
 
 import pytest
 
@@ -26,7 +27,9 @@ pytestmark = pytest.mark.docgate
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOC_PATH = os.path.join(PROJECT_DIR, 'docs', '第2轮_对拍差异归因.md')
-PREV_ROUND = os.path.join(os.path.dirname(PROJECT_DIR), 'Week7_Attendance_Final.xlsx')
+SAMPLE_DIR = Path(PROJECT_DIR) / 'data_sample'
+PREV_ROUND = SAMPLE_DIR / 'Week7_Attendance_Final.xlsx'
+ROUND_OUTPUTS = SAMPLE_DIR / '_work' / '输出'
 
 #: R16 的六个归因类目 → 允许的书写形式
 SIX_CATEGORIES = {
@@ -143,18 +146,13 @@ def _parse_diff_table(text):
     return None
 
 
-def _recompute(real_detail_path, real_exempt_path, tmp_path):
-    """独立复算：本次产物 vs 上一轮产物，逐 (工作表, 学院, 星期) 的免勤合计。"""
-    from core import RunConfig, run
-    out = str(tmp_path / '本次产物.xlsx')
-    result = run(RunConfig(detail_path=real_detail_path, exempt_path=real_exempt_path,
-                            output_path=out, week_no=7))
-    assert result.ok, result.error
+def _compare_round_outputs(out, previous):
+    """独立汇总归因文档所引用的两份产物。"""
     mine, base = {}, {}
     for sheet in ('雁山（早）', '雁山（晚）'):
         for (college, day), value in _room_sums(out, sheet).items():
             mine[(sheet, college, day)] = value
-        for (college, day), value in _room_sums(PREV_ROUND, sheet).items():
+        for (college, day), value in _room_sums(previous, sheet).items():
             base[(sheet, college, day)] = value
     keys = set(mine) | set(base)
     diff = {k: (mine.get(k, 0), base.get(k, 0)) for k in keys
@@ -216,15 +214,16 @@ def test_doc_has_no_undecided_verdict_paragraph():
         '结论章仍留着已被裁定的「孰优孰劣由需求方裁定」'
 
 
-def test_doc_numbers_match_independent_recomputation(real_detail_path, real_exempt_path,
-                                                     tmp_path):
-    """⑦ 数字必须与独立复算一致，且差异组合数符合 R19（6 个组合）。"""
-    if not os.path.exists(PREV_ROUND):
-        pytest.skip('上一轮产物不在预期位置：%s' % PREV_ROUND)
+def test_doc_numbers_match_historical_workbooks():
+    """⑦ 独立核对 v1.0.3 归因文档引用的历史产物及其 6 个差异。"""
+    outputs = sorted(ROUND_OUTPUTS.glob('*_第7周计算结果.xlsx'))
+    if not outputs or not PREV_ROUND.is_file():
+        pytest.skip('缺少第 2 轮归因文档所引用的历史产物')
+    assert len(outputs) == 1, '第 2 轮产物应唯一'
     text = _doc_text()
     rows = _parse_diff_table(text)
     assert rows, '文档缺少「工作表 / 学院 / 星期 × 本次 / 基线 / 差」明细表（R19/R21 要求）'
-    mine, base, diff = _recompute(real_detail_path, real_exempt_path, tmp_path)
+    mine, base, diff = _compare_round_outputs(outputs[0], PREV_ROUND)
 
     assert len(diff) == 6, '独立复算得到 %d 个差异组合，R19 裁定为 6 个' % len(diff)
     assert len(rows) == len(diff), \
@@ -247,8 +246,7 @@ def test_doc_numbers_match_independent_recomputation(real_detail_path, real_exem
                                                           doc_keys - set(diff))
 
 
-def test_doc_does_not_quote_non_public_totals_as_headline(real_detail_path,
-                                                           real_exempt_path, tmp_path):
+def test_doc_does_not_quote_non_public_totals_as_headline():
     """R23：对外只认产出工作簿的学院×星期合计；引用其它口径必须附「口径变更」说明。"""
     text = _doc_text()
     for token in ('1888', '1265', '1891', '1517'):

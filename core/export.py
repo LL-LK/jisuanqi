@@ -18,7 +18,7 @@ import os
 from contextlib import closing, contextmanager
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Side
@@ -319,13 +319,22 @@ def verify_workbook_integrity(
             wb.close()
 
 
-def compare_actuals(source_path, result_path):
-    """用可信原表核对实到列，返回有差异的 Excel 坐标。"""
+def diff_actuals_detailed(source_path: str, result_path: str) -> List[Dict[str, Any]]:
+    """用可信原表逐格核对实到列，返回包含结构化差异信息的清单。
+
+    每条差异记录包含：
+        sheet: 工作表名
+        cell: Excel 坐标（如 雁山（早）!F4）
+        row: 行号（1 起始）
+        col: 列号（1 起始）
+        source_value: 原始表格中的实到值/公式
+        result_value: 计算结果表中的对应单元格值
+    """
     with closing(load_workbook(source_path)) as source, closing(load_workbook(result_path)) as result:
         originals = actual_cells(source)
         if not originals:
             raise ValueError('原表没有可识别的雁山实到列')
-        changes = []
+        diffs: List[Dict[str, Any]] = []
         with _cached_actual_workbooks(source_path, result_path, source, originals) as cached:
             for (name, row, col), original in originals.items():
                 target = result[name].cell(row, col) if name in result.sheetnames else None
@@ -342,8 +351,20 @@ def compare_actuals(source_path, result_path):
                             continue
                     elif type(value) is type(original) and value == original:
                         continue
-                changes.append(f'{name}!{get_column_letter(col)}{row}')
-        return changes
+                diffs.append({
+                    'sheet': name,
+                    'cell': f'{name}!{get_column_letter(col)}{row}',
+                    'row': row,
+                    'col': col,
+                    'source_value': original,
+                    'result_value': target.value if target is not None else None,
+                })
+        return diffs
+
+
+def compare_actuals(source_path: str, result_path: str) -> List[str]:
+    """用可信原表核对实到列，返回有差异的 Excel 坐标。"""
+    return [d['cell'] for d in diff_actuals_detailed(source_path, result_path)]
 
 
 @contextmanager
@@ -433,7 +454,9 @@ def export(detail_path: str,
             rate_label_row = detail.rate_label_rows.get(sheet_name)
             if rate_label_row:
                 for label, column in rate_cols.items():
-                    ws.cell(rate_label_row, column).value = '周平均' if label == '平均' else label
+                    cell = ws.cell(rate_label_row, column)
+                    if cell.value is None or (isinstance(cell.value, str) and not cell.value.strip()):
+                        cell.value = '周平均' if label == '平均' else label
 
             # ---- 1. 写教室级免勤人数 ----
             for room in detail.rooms_of(sheet_name) if college_exempt is None else ():

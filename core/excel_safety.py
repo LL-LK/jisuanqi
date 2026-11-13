@@ -200,9 +200,9 @@ def verify_excel_health(path: str) -> FileCheckResult:
 
 
 def classify_excel_file(path: str) -> str:
-    """快速嗅探 Excel 类别：返回 'DETAIL' | 'EXEMPT' | 'UNKNOWN'。
+    """快速嗅探 Excel 类别：返回 'DETAIL' | 'SUMMARY' | 'EXEMPT' | 'DICTIONARY' | 'UNKNOWN'。
 
-    采用 Tier 1 文件名先验打分 + Tier 2 工作表名与前 5 行指纹识别的双层机制。
+    采用 Tier 1 文件名先验打分 + Tier 2 工作表名与表头指纹识别的多层机制。
     带严格的 openpyxl.close() 资源释放保障。
     """
     health = verify_excel_health(path)
@@ -212,12 +212,19 @@ def classify_excel_file(path: str) -> str:
     base_name = os.path.basename(path).lower()
     detail_score = 0
     exempt_score = 0
+    summary_score = 0
+    dict_score = 0
 
     # 1. Tier 1: 文件名关键词先验
+    dict_strong_kw = ('词典', 'dictionary', '免勤词典')
     detail_strong_kw = ('明细', '执行情况', '早晚自习', '自习执行')
     detail_medium_kw = ('早自习', '晚自习', '考勤', '考勤明细', '自习')
     exempt_strong_kw = ('免勤', '请假', '免修', '免勤人员', '免勤汇总')
     exempt_medium_kw = ('人员统计', '免勤统计', '假条', '请假汇总')
+    summary_strong_kw = ('终稿', '汇总', '考勤汇总', '出勤统计')
+
+    if any(k in base_name for k in dict_strong_kw):
+        dict_score += 5
 
     if any(k in base_name for k in detail_strong_kw):
         detail_score += 3
@@ -229,38 +236,62 @@ def classify_excel_file(path: str) -> str:
     elif any(k in base_name for k in exempt_medium_kw):
         exempt_score += 2
 
+    if any(k in base_name for k in summary_strong_kw):
+        summary_score += 3
+
     # 2. Tier 2: 工作表名称与前 5 行表头指纹提取
     wb = None
     try:
         from openpyxl import load_workbook
         wb = load_workbook(path, read_only=True, data_only=True)
         sheet_names = wb.sheetnames
+        sheet_names_lower = [s.lower() for s in sheet_names]
 
-        # 2.1 工作表名特征
+        # 2.1 词典表特征工作表
+        dict_sheets = {'学院别名', '班级别名', '校区别名', '免勤理由分类', '统计参数'}
+        matched_dict_sheets = dict_sheets & set(sheet_names)
+        if matched_dict_sheets:
+            dict_score += len(matched_dict_sheets) * 5
+
+        # 2.2 工作表名特征
         if any('雁山' in s or '屏风' in s for s in sheet_names):
             detail_score += 5
         if any('免勤' in s or '请假' in s or '免修' in s for s in sheet_names):
             exempt_score += 4
+        if any('sheet2' in s or '终稿' in s or '汇总' in s for s in sheet_names_lower):
+            summary_score += 4
 
-        # 2.2 扫描第一张工作表的前 5 行文本特征
-        if sheet_names:
-            first_ws = wb[sheet_names[0]]
-            cell_texts = set()
-            for row in first_ws.iter_rows(max_row=5, values_only=True):
+        # 2.3 扫描前两个工作表的前 5 行文本特征
+        cell_texts = set()
+        for sname in sheet_names[:2]:
+            ws = wb[sname]
+            for row in ws.iter_rows(max_row=5, values_only=True):
                 for val in row:
                     if val is not None:
                         s = str(val).strip()
+                        if s.startswith("'"):
+                            s = s[1:].strip()  # 吸收 WorkBuddy 前导单引号规整模式
                         if s:
                             cell_texts.add(s)
 
-            detail_fingerprints = {'教室', '应到人数', '分配专业班级', '学生出勤率', '值班辅导员', '执行效果', '应到', '实到'}
-            exempt_fingerprints = {'学号', '免勤周次', '免勤自习', '免勤原因', '请假类型', '自习室', '免勤时间'}
+        detail_fingerprints = {'教室', '应到人数', '分配专业班级', '学生出勤率', '值班辅导员', '执行效果', '应到', '实到'}
+        exempt_fingerprints = {'学号', '免勤周次', '免勤自习', '免勤原因', '请假类型', '自习室', '免勤时间'}
+        summary_fingerprints = {'学生出勤率', '值班辅导员巡查率', '执行效果', '早晚自习执行情况终稿', '辅导员巡查率', '巡查率'}
 
-            detail_hits = sum(1 for k in detail_fingerprints if any(k in c for c in cell_texts))
-            exempt_hits = sum(1 for k in exempt_fingerprints if any(k in c for c in cell_texts))
+        # 汇总表独有特征：含出勤率与巡查率，且不含教室
+        has_classroom = any('教室' in c for c in cell_texts)
+        has_student_rate = any('出勤率' in c for c in cell_texts)
+        has_patrol_rate = any('巡查率' in c for c in cell_texts)
+        if has_student_rate and has_patrol_rate and not has_classroom:
+            summary_score += 10
 
-            detail_score += detail_hits * 3
-            exempt_score += exempt_hits * 3
+        detail_hits = sum(1 for k in detail_fingerprints if any(k in c for c in cell_texts))
+        exempt_hits = sum(1 for k in exempt_fingerprints if any(k in c for c in cell_texts))
+        summary_hits = sum(1 for k in summary_fingerprints if any(k in c for c in cell_texts))
+
+        detail_score += detail_hits * 3
+        exempt_score += exempt_hits * 3
+        summary_score += summary_hits * 3
     except Exception:
         # 轻量读取失败不中断，沿用 Tier 1 分数
         pass
@@ -271,11 +302,68 @@ def classify_excel_file(path: str) -> str:
             except Exception:
                 pass
 
-    if detail_score >= 3 and detail_score > exempt_score:
-        return 'DETAIL'
-    if exempt_score >= 3 and exempt_score > detail_score:
-        return 'EXEMPT'
+    scores = [
+        (detail_score, 'DETAIL'),
+        (exempt_score, 'EXEMPT'),
+        (summary_score, 'SUMMARY'),
+        (dict_score, 'DICTIONARY'),
+    ]
+    scores.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_type = scores[0]
+    if best_score >= 3:
+        if len(scores) > 1 and scores[1][0] == best_score:
+            return 'UNKNOWN'
+        return best_type
     return 'UNKNOWN'
+
+
+def preflight_excel_file(path: str) -> Dict[str, Any]:
+    """对单个 Excel 文件执行全面的前置健康诊断与表型推断。
+
+    整合物理健康校验、11 种标准化异常代码诊断、脱敏技术根因、
+    文件尺寸与 SHA256 指纹及表型自动嗅探（DETAIL/SUMMARY/EXEMPT/DICTIONARY/UNKNOWN）。
+    """
+    health = verify_excel_health(path)
+    table_type = 'UNKNOWN'
+    sheet_names: List[str] = []
+    file_size = 0
+    sha_prefix = 'N/A'
+
+    if path and os.path.exists(path) and not os.path.isdir(path):
+        try:
+            file_size = os.path.getsize(path)
+            sha_prefix = _file_sha256_prefix(path)
+        except OSError:
+            pass
+
+    if health.is_valid:
+        table_type = classify_excel_file(path)
+        wb = None
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(path, read_only=True)
+            sheet_names = list(wb.sheetnames)
+        except Exception:
+            pass
+        finally:
+            if wb is not None:
+                try:
+                    wb.close()
+                except Exception:
+                    pass
+
+    return {
+        'path': DiagnosticMasker.mask_path(path) if path else '',
+        'is_valid': health.is_valid,
+        'error_code': health.error_code,
+        'user_message': health.user_message,
+        'tech_detail': DiagnosticMasker.mask_path(health.tech_detail) if health.tech_detail else '',
+        'table_type': table_type,
+        'file_size_bytes': file_size,
+        'file_size_formatted': _format_size(file_size),
+        'sha256_prefix': sha_prefix,
+        'sheet_names': sheet_names,
+    }
 
 
 class DiagnosticMasker:
