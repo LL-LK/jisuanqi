@@ -201,7 +201,7 @@ def main(argv=None) -> int:
         masked_runs = []
         for r in runs:
             item = dict(r)
-            for pkey in ['detail_path', 'output_path', 'summary_path']:
+            for pkey in ['detail_path', 'output_path', 'summary_path', 'dictionary_path']:
                 if pkey in item and item[pkey]:
                     item[pkey] = DiagnosticMasker.mask_path(item[pkey])
             masked_runs.append(item)
@@ -244,7 +244,7 @@ def main(argv=None) -> int:
             return 1
 
         masked_record = dict(run_record)
-        for pkey in ['detail_path', 'output_path', 'summary_path']:
+        for pkey in ['detail_path', 'output_path', 'summary_path', 'dictionary_path']:
             if pkey in masked_record and masked_record[pkey]:
                 masked_record[pkey] = DiagnosticMasker.mask_path(masked_record[pkey])
 

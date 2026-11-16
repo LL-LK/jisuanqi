@@ -929,6 +929,91 @@ class TestCliRemediationAndHardening:
         data_missing = json.loads(stdout_missing)
         assert data_missing['status'] == 'not_found'
 
+    def test_cli_list_runs_masks_dictionary_path(self, synthetic_sample, tmp_path: Path):
+        """测试 --list-runs 对 dictionary_path 与 output_path 执行路径掩码脱敏。"""
+        out_detail = tmp_path / 'masked_path_out.xlsx'
+        code, _ = run_cli_in_process([
+            '--detail', str(synthetic_sample['detail']),
+            '--exempt', str(synthetic_sample['exempt']),
+            '--dictionary', str(synthetic_sample['dict']),
+            '--out', str(out_detail),
+            '--week', '7',
+            '--json',
+        ])
+        assert code == 0
+
+        code_list, stdout_list = run_cli_in_process(['--list-runs', '--json'])
+        assert code_list == 0
+        runs = json.loads(stdout_list)['runs']
+        assert runs
+        latest_dict_path = runs[0].get('dictionary_path', '')
+        home_dir = os.path.expanduser('~')
+        if home_dir and home_dir in str(synthetic_sample['dict']):
+            assert home_dir not in latest_dict_path, f"Unmasked home dir in dictionary_path: {latest_dict_path}"
+
+    def test_v110_identity_conflict_counts_as_one_and_preserves_review_ref(self, tmp_path: Path):
+        """测试 v1.1.0 口径：同号异名/跨学院冲突按 (学号,星期,自习) 计 1 人，不再暂缓。"""
+        detail_path = tmp_path / 'detail_v110.xlsx'
+        exempt_path = tmp_path / 'exempt_v110.xlsx'
+        rep_out = tmp_path / 'exempt_report_v110.xlsx'
+        out_file = tmp_path / 'result_v110.xlsx'
+
+        write_detail(detail_path, focused_sheets())
+        write_exempt(
+            exempt_path,
+            {
+                '早自习免勤人员统计表': [
+                    make_exempt_row(
+                        sid='9900000000088',
+                        college='理学院',
+                        name='测试甲',
+                        class_text='应用统计学26-1班',
+                        week_text='第7周',
+                        day_text='周一',
+                        session='早',
+                        campus='雁山校区',
+                        room='8101',
+                    ),
+                    make_exempt_row(
+                        sid='9900000000088',
+                        college='理学院',
+                        name='测试乙',
+                        class_text='应用统计学26-1班',
+                        week_text='第7周',
+                        day_text='周一',
+                        session='早',
+                        campus='雁山校区',
+                        room='8101',
+                    ),
+                ],
+                '晚自习免勤人员统计表': [],
+            },
+            with_room=True,
+        )
+
+        code, stdout = run_cli_in_process([
+            '--detail', str(detail_path),
+            '--exempt', str(exempt_path),
+            '--out', str(out_file),
+            '--exempt-report', str(rep_out),
+            '--week', '7',
+            '--no-storage',
+            '--json',
+        ])
+        assert code == 0, stdout
+        data = json.loads(stdout)
+        assert data['exempt_stats']['同学号身份冲突'] == 1
+        assert data['exempt_stats']['身份冲突暂缓计入人次'] == 0
+        monday_early = next(
+            r for r in data['college_rates']
+            if r['sheet'] == '雁山（早）' and r['college'] == '理学院' and r['day'] == '周一'
+        )
+        assert monday_early['exempt'] == 1
+        assert monday_early['rate'] is not None
+        wb = load_workbook(rep_out, data_only=True)
+        assert '免勤核对' in wb.sheetnames
+        wb.close()
+
     def test_cli_diagnostic_log_export(self, synthetic_sample, tmp_path: Path):
         """测试 --diagnostic-log 参数一键导出脱敏 Markdown 诊断报告。"""
         out_detail = tmp_path / 'out_detail_diag.xlsx'
