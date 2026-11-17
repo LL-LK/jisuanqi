@@ -21,11 +21,13 @@ from typing import Dict, List, Optional, Tuple
 
 from openpyxl import load_workbook
 
+from .formulas import open_evaluated_workbook
 from .model import ExemptRecord
 from .parsing import (extract_group_size, is_group_application, normalize_class,
                       normalize_campus, normalize_room, normalize_text,
                       parse_int, parse_session, parse_weekdays, parse_weeks,
                       resolve_pairs, session_pairs, strip_spaces)
+from .privacy import ABNORM_SID_RE, ANON_SID_RE
 
 _HEADER_HINTS = ('学号', '免勤周次')
 _ROOM_HEADER_KEYS = ('教室号', '所在教室', '教室')
@@ -47,6 +49,8 @@ def normalize_sid(value) -> tuple:
     if isinstance(value, bool):
         return '', False, '布尔值'
     if isinstance(value, int):
+        if value <= 0:
+            return str(value), False, '非正整数学号'
         text = str(value)
         if len(text) < 13:
             # 裁定 R11 一层：整型学号先**左补零至 13 位**再进键空间。
@@ -60,7 +64,10 @@ def normalize_sid(value) -> tuple:
         if value != value or value in (float('inf'), float('-inf')):
             return '', False, '非法数值'
         if float(value).is_integer():
-            text = str(int(value))
+            ival = int(value)
+            if ival <= 0:
+                return str(ival), False, '非正整数学号'
+            text = str(ival)
             if len(text) < 13:
                 return text.zfill(13), True, ('整型 %d 位，已左补零至 13 位' % len(text))
             return text, len(text) == 13, ('整型 %d 位' % len(text))
@@ -68,6 +75,10 @@ def normalize_sid(value) -> tuple:
     text = strip_spaces(value).strip("'\"‘’“”`")
     if not text:
         return '', False, '空'
+    if ANON_SID_RE.match(text):
+        return text, True, '已脱敏学号'
+    if ABNORM_SID_RE.match(text):
+        return text, False, '已脱敏异常学号'
     if text.isdigit():
         return text, len(text) == 13, ('整型 %d 位' % len(text))
     return text, False, '非数字学号'
@@ -151,8 +162,7 @@ def load_exemptions(path: str, source: str = '未分类',
     params = getattr(dictionary, 'params', {}) if dictionary else {}
     blank_campus = params.get('空白校区默认值', '雁山')
     classify_reason = getattr(dictionary, 'reason_class_of', None)
-    with open(path, 'rb') as f:
-        wb = load_workbook(f, data_only=True)
+    with open_evaluated_workbook(path) as (wb, _flatten_stats):
         try:
             recognized = False
             for sheet_number, sheet_name in enumerate(wb.sheetnames, 1):

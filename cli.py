@@ -16,6 +16,12 @@
 
     # 防篡改校验与原始明细实到对拍：
     python cli.py --verify-tamper 结果.xlsx [--against-detail 原明细.xlsx] [--json]
+
+    # 计算前清除公式、仅保留纯数值（支持 --out 或 --in-place）：
+    python cli.py --flatten-formulas 输入.xlsx [--out 纯数值.xlsx] [--json]
+
+    # 计算前隐私剔除（仅保留伪匿名学号 ANON-*、学院免勤人数与 4 类计数）：
+    python cli.py --strip-privacy 免勤表.xlsx [--out 免勤表_脱敏.xlsx] [--dictionary 词典.xlsx] [--json]
 """
 
 from __future__ import annotations
@@ -44,22 +50,45 @@ from core.exempt_report import (
     reconcile_backfill_discrepancies,
 )
 from core.export import (
+    _same_path,
     check_output_path,
     compare_actuals,
     diff_actuals_detailed,
     verify_workbook_integrity,
 )
+from core.formulas import export_flattened_workbook
 from core.io_detail import infer_workbook_week
 from core.pipeline import output_path_for, summary_path_for
+from core.privacy import (
+    PrivacyRedactor,
+    assert_model_privacy_compliance,
+    build_model_safe_exempt_summary,
+    collect_sensitive_entities,
+    strip_workbook_privacy,
+)
 from core.storage import AttendanceStorage
 
 SID_PATTERN = re.compile(r'(?<![0-9A-Fa-f])(?!99)\d{13}(?![0-9A-Fa-f])')
 
 
-def _print_json(data: Any) -> None:
-    """标准 JSON 输出，强制执行 13 位学号零泄露断言。"""
+def _print_json(
+    data: Any,
+    *,
+    forbidden_names=(),
+    forbidden_sids=(),
+    forbidden_reasons=(),
+    forbidden_classes=(),
+) -> None:
+    """标准 JSON 输出，强制执行 13 位学号及姓名/理由/班级零泄露硬校验。"""
     json_str = json.dumps(data, ensure_ascii=False, indent=2)
     assert not SID_PATTERN.search(json_str), "Privacy violation: unmasked 13-digit student ID detected in JSON output"
+    assert_model_privacy_compliance(
+        json_str,
+        forbidden_names=forbidden_names,
+        forbidden_sids=forbidden_sids,
+        forbidden_reasons=forbidden_reasons,
+        forbidden_classes=forbidden_classes,
+    )
     print(json_str)
 
 
@@ -89,6 +118,12 @@ def main(argv=None) -> int:
     parser.add_argument('--json', action='store_true', help='以标准化 JSON 格式输出结果')
     parser.add_argument('--preflight', nargs='+', default=None, metavar='FILE',
                         help='执行前置 Excel 健康自检与表型自动识别')
+    parser.add_argument('--flatten-formulas', default=None, metavar='FILE',
+                        help='计算前预先清除 Excel 内公式、仅保留纯数字与两位小数百分比')
+    parser.add_argument('--strip-privacy', default=None, metavar='FILE',
+                        help='计算前剔除学生姓名/病由/个人班级/联系方式并伪匿名化学号，生成最小化脱敏副本')
+    parser.add_argument('--in-place', action='store_true',
+                        help='仅与 --flatten-formulas 或 --strip-privacy 配合使用，就地覆盖原工作簿（原子写入）')
     parser.add_argument('--verify-tamper', default=None, help='校验指定结果 Excel 文件的防篡改签名完整性')
     parser.add_argument('--against-detail', help='防篡改校验时与可信原始明细逐格核对实到人数')
     parser.add_argument('--detail', required=False, help='执行情况明细表路径')
@@ -139,6 +174,97 @@ def main(argv=None) -> int:
             if r['tech_detail']:
                 print(f"   技术细节: {r['tech_detail']}")
         return code
+
+    # 1.5 计算前公式展平 (--flatten-formulas) 与隐私剔除 (--strip-privacy)
+    if args.in_place and not (args.flatten_formulas or args.strip_privacy):
+        parser.error('--in-place 必须与 --flatten-formulas 或 --strip-privacy 同时使用')
+
+    if args.strip_privacy:
+        src_path = args.strip_privacy
+        stem, _ = os.path.splitext(src_path)
+        out_path = args.out or (src_path if args.in_place else f'{stem}_脱敏.xlsx')
+        try:
+            if not os.path.isfile(src_path):
+                raise FileNotFoundError(f'找不到待脱敏的 Excel 文件：{src_path}')
+            if not args.in_place and _same_path(src_path, out_path):
+                raise ValueError('输出路径不能与输入文件相同，如需就地脱敏请追加 --in-place')
+            p_stats = strip_workbook_privacy(src_path, out_path, dictionary_path=args.dictionary)
+        except (OSError, ValueError, RuntimeError, BadZipFile) as exc:
+            if args.json:
+                _print_json({
+                    'action': 'strip_privacy',
+                    'status': 'error',
+                    'code': 1,
+                    'duration_ms': int((time.perf_counter() - t_start) * 1000),
+                    'error': PrivacyRedactor().redact_text(str(exc)),
+                })
+                return 1
+            parser.error(str(exc))
+
+        duration_ms = int((time.perf_counter() - t_start) * 1000)
+        if args.json:
+            _print_json({
+                'action': 'strip_privacy',
+                'status': 'ok',
+                'code': 0,
+                'duration_ms': duration_ms,
+                'output_file': out_path,
+                **p_stats,
+            })
+            return 0
+
+        print('=== 隐私剔除与伪匿名脱敏完成 ===')
+        print(f'输出文件：{out_path}')
+        print(
+            f"处理行：{p_stats['rows_stripped']} | 匿名学号：{p_stats['sids_anonymized']} | "
+            f"清除姓名：{p_stats['names_removed']} | 清除高敏字段：{p_stats['sensitive_cells_cleared']} | "
+            f"残留公式：{p_stats['residual_formulas']}"
+        )
+        return 0
+
+    if args.flatten_formulas:
+        src_path = args.flatten_formulas
+        stem, _ = os.path.splitext(src_path)
+        out_path = args.out or (src_path if args.in_place else f'{stem}_纯数值.xlsx')
+        try:
+            if not os.path.isfile(src_path):
+                raise FileNotFoundError(f'找不到待清理的 Excel 文件：{src_path}')
+            if not args.in_place and _same_path(src_path, out_path):
+                raise ValueError('输出路径不能与输入文件相同，如需覆盖原文件请追加 --in-place')
+            stats = export_flattened_workbook(src_path, out_path)
+        except (OSError, ValueError, RuntimeError, BadZipFile) as exc:
+            if args.json:
+                _print_json({
+                    'action': 'flatten_formulas',
+                    'status': 'error',
+                    'code': 1,
+                    'duration_ms': int((time.perf_counter() - t_start) * 1000),
+                    'error': _sanitize_anomaly_text(str(exc)),
+                })
+                return 1
+            parser.error(str(exc))
+
+        duration_ms = int((time.perf_counter() - t_start) * 1000)
+        stats_dict = stats.to_dict()
+        if args.json:
+            _print_json({
+                'action': 'flatten_formulas',
+                'status': 'ok',
+                'code': 0,
+                'duration_ms': duration_ms,
+                'output_file': out_path,
+                **stats_dict,
+            })
+            return 0
+
+        print('=== 公式展平与纯数值化完成 ===')
+        print(f'输出文件：{out_path}')
+        print(f'识别公式：{stats.total_formula_cells} | 缓存固化：{stats.frozen_from_cache} | '
+              f'实时求值：{stats.evaluated_formulas} | 清理未解公式：{stats.cleared_unresolved} | '
+              f'残留公式：{stats.residual_formulas}')
+        if stats.unresolved_cells:
+            print('提示：以下无法求值且无缓存的公式已清空 -> ' + '、'.join(stats.unresolved_cells[:10]))
+        return 0
 
     # 2. 防篡改签名校验与实到人数逐格对拍 (--verify-tamper / --against-detail)
     if args.against_detail and not args.verify_tamper:
@@ -204,6 +330,10 @@ def main(argv=None) -> int:
             for pkey in ['detail_path', 'output_path', 'summary_path', 'dictionary_path']:
                 if pkey in item and item[pkey]:
                     item[pkey] = DiagnosticMasker.mask_path(item[pkey])
+            if item.get('exempt_files_json'):
+                item['exempt_files_json'] = PrivacyRedactor().redact_text(item['exempt_files_json'])
+            if item.get('notes'):
+                item['notes'] = PrivacyRedactor().redact_text(item['notes'])
             masked_runs.append(item)
 
         if args.json:
@@ -232,11 +362,12 @@ def main(argv=None) -> int:
         run_record = storage.get_run(args.show_run)
         if not run_record:
             if args.json:
+                safe_id = args.show_run if len(str(args.show_run)) < 8 else '***'
                 _print_json({
                     'action': 'show_run',
                     'status': 'not_found',
                     'code': 1,
-                    'error': f'Run ID {args.show_run} not found',
+                    'error': f'Run ID {safe_id} not found',
                     'duration_ms': int((time.perf_counter() - t_start) * 1000),
                 })
                 return 1
@@ -244,9 +375,14 @@ def main(argv=None) -> int:
             return 1
 
         masked_record = dict(run_record)
+        redactor = PrivacyRedactor()
         for pkey in ['detail_path', 'output_path', 'summary_path', 'dictionary_path']:
             if pkey in masked_record and masked_record[pkey]:
                 masked_record[pkey] = DiagnosticMasker.mask_path(masked_record[pkey])
+        if masked_record.get('exempt_files_json'):
+            masked_record['exempt_files_json'] = redactor.redact_text(masked_record['exempt_files_json'])
+        if masked_record.get('notes'):
+            masked_record['notes'] = redactor.redact_text(masked_record['notes'])
 
         if args.json:
             _print_json({
@@ -362,52 +498,96 @@ def main(argv=None) -> int:
             parser.error(str(exc))
 
     result = run(config)
+    redactor = PrivacyRedactor()
+    f_names, f_sids, f_reasons, f_classes = collect_sensitive_entities(result)
+    redact_ctx = {
+        'extra_names': f_names,
+        'extra_sids': f_sids,
+        'extra_reasons': f_reasons,
+        'extra_classes': f_classes,
+    }
 
+    diag_written = False
+    diag_error = None
     if args.diagnostic_log:
         try:
-            diag_text = generate_diagnostic_log(config, result=result)
+            diag_text = generate_diagnostic_log(config, result=result, strict_privacy=True)
             diag_dir = os.path.dirname(os.path.abspath(args.diagnostic_log))
             if diag_dir:
                 os.makedirs(diag_dir, exist_ok=True)
             with open(args.diagnostic_log, 'w', encoding='utf-8') as f:
                 f.write(diag_text)
-        except Exception:
-            pass
+            diag_written = True
+        except Exception as exc:
+            diag_error = redactor.redact_text(str(exc), **redact_ctx)
 
     if not result.ok:
+        safe_err = redactor.redact_text(result.error, **redact_ctx)
         if args.json:
             out_err = {
                 'action': 'run',
                 'status': 'error',
                 'code': 1,
                 'duration_ms': result.duration_ms or int((time.perf_counter() - t_start) * 1000),
-                'error': _sanitize_anomaly_text(result.error),
+                'error': safe_err,
             }
             if args.diagnostic_log:
-                out_err['diagnostic_log'] = args.diagnostic_log
-            _print_json(out_err)
+                if diag_written:
+                    out_err['diagnostic_log'] = args.diagnostic_log
+                else:
+                    out_err['diagnostic_log_error'] = diag_error
+            _print_json(
+                out_err,
+                forbidden_names=f_names,
+                forbidden_sids=f_sids,
+                forbidden_reasons=f_reasons,
+                forbidden_classes=f_classes,
+            )
             return 1
-        print('计算失败：%s' % result.error)
+        assert_model_privacy_compliance(
+            safe_err,
+            forbidden_names=f_names,
+            forbidden_sids=f_sids,
+            forbidden_reasons=f_reasons,
+            forbidden_classes=f_classes,
+        )
+        print('计算失败：%s' % safe_err)
         if args.diagnostic_log:
-            print('诊断日志已生成：%s' % args.diagnostic_log)
+            if diag_written:
+                print('诊断日志已生成：%s' % args.diagnostic_log)
+            else:
+                print('诊断日志生成失败：%s' % diag_error)
         return 1
 
     if args.exempt_report:
         try:
             export_exempt_report(args.exempt_report, result)
         except (OSError, ValueError) as exc:
+            safe_rep_err = redactor.redact_text(
+                f'明细结果已生成（{result.output_path}），免勤统计表导出失败: {exc}',
+                **redact_ctx,
+            )
             if args.json:
-                _print_json({
-                    'action': 'run',
-                    'status': 'error',
-                    'code': 1,
-                    'duration_ms': result.duration_ms,
-                    'error': _sanitize_anomaly_text(f'明细结果已生成（{result.output_path}），免勤统计表导出失败: {exc}'),
-                    'output_file': result.output_path,
-                })
+                _print_json(
+                    {
+                        'action': 'run',
+                        'status': 'error',
+                        'code': 1,
+                        'duration_ms': result.duration_ms,
+                        'error': safe_rep_err,
+                        'output_file': result.output_path,
+                    },
+                    forbidden_names=f_names,
+                    forbidden_sids=f_sids,
+                    forbidden_reasons=f_reasons,
+                    forbidden_classes=f_classes,
+                )
                 return 1
-            print('明细结果已生成（%s），免勤统计表导出失败：%s' % (result.output_path, exc))
+            print(safe_rep_err)
             return 1
+
+    sanitized_anomalies = [redactor.redact_anomaly(a, **redact_ctx) for a in result.anomalies]
+    model_safe_exempt_summary = build_model_safe_exempt_summary(result, redactor)
 
     if args.json:
         college_rates_list = []
@@ -433,25 +613,6 @@ def main(argv=None) -> int:
             })
         discrepancies = reconcile_backfill_discrepancies(result.exempt_rows)
 
-        def _sanitize_anomaly_item(item: Dict[str, Any]) -> Dict[str, Any]:
-            cleaned = {}
-            for k, v in item.items():
-                if isinstance(v, str):
-                    cleaned[k] = _sanitize_anomaly_text(v)
-                elif isinstance(v, dict):
-                    cleaned[k] = _sanitize_anomaly_item(v)
-                elif isinstance(v, list):
-                    cleaned[k] = [
-                        _sanitize_anomaly_item(elem) if isinstance(elem, dict)
-                        else (_sanitize_anomaly_text(elem) if isinstance(elem, str) else elem)
-                        for elem in v
-                    ]
-                else:
-                    cleaned[k] = v
-            return cleaned
-
-        sanitized_anomalies = [_sanitize_anomaly_item(a) for a in result.anomalies]
-
         data = {
             'action': 'run',
             'status': 'ok',
@@ -463,23 +624,36 @@ def main(argv=None) -> int:
             'exempt_report': args.exempt_report,
             'summary': result.summary,
             'exempt_stats': result.exempt_stats,
+            'college_exempt_summary': model_safe_exempt_summary,
             'college_rates': college_rates_list,
             'weekly_rates': weekly_rates_list,
             'discrepancies_count': len(discrepancies),
             'discrepancies': discrepancies,
-            'anomalies_count': len(result.anomalies),
+            'anomalies_count': len(sanitized_anomalies),
             'anomalies': sanitized_anomalies,
         }
         if args.diagnostic_log:
-            data['diagnostic_log'] = args.diagnostic_log
-        _print_json(data)
+            if diag_written:
+                data['diagnostic_log'] = args.diagnostic_log
+            else:
+                data['diagnostic_log_error'] = diag_error
+        _print_json(
+            data,
+            forbidden_names=f_names,
+            forbidden_sids=f_sids,
+            forbidden_reasons=f_reasons,
+            forbidden_classes=f_classes,
+        )
         return 0
 
     if args.exempt_report:
         print('免勤统计表：%s' % args.exempt_report)
 
     if args.diagnostic_log:
-        print('诊断报告已导出：%s' % args.diagnostic_log)
+        if diag_written:
+            print('诊断报告已导出：%s' % args.diagnostic_log)
+        else:
+            print('诊断报告导出失败：%s' % diag_error)
 
     print('=== 汇总 ===')
     for key, value in result.summary.items():
@@ -489,11 +663,19 @@ def main(argv=None) -> int:
         print('%-26s %s' % (key, value))
     print('\n输出文件：%s' % result.output_path)
 
-    print('\n=== 异常清单（前 30 条）===')
-    for item in result.anomalies[:30]:
-        print('[%s] %s | %s | %s' % (item['level'], item['type'], item['scope'], item['note']))
-    if len(result.anomalies) > 30:
-        print('... 其余 %d 条见界面异常面板' % (len(result.anomalies) - 30))
+    print('\n=== 异常清单（前 30 条，已执行模型零隐私剔除）===')
+    for item in sanitized_anomalies[:30]:
+        line = '[%s] %s | %s | %s' % (item['level'], item['type'], item['scope'], item['note'])
+        assert_model_privacy_compliance(
+            line,
+            forbidden_names=f_names,
+            forbidden_sids=f_sids,
+            forbidden_reasons=f_reasons,
+            forbidden_classes=f_classes,
+        )
+        print(line)
+    if len(sanitized_anomalies) > 30:
+        print('... 其余 %d 条见界面异常面板' % (len(sanitized_anomalies) - 30))
 
     print('\n=== 学院出勤率 ===')
     for rec in result.college_rates:

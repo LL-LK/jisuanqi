@@ -118,14 +118,26 @@ def export_exempt_report(path, result, rows=None, extra_protected_paths=()):
         book.close()
 
 
+def _sanitize_cell_text(val: Any) -> Any:
+    """防止以 '=' / '+' / '-' / '@' 开头的文本被 Excel/openpyxl 判定为公式或公式注入。"""
+    if isinstance(val, str):
+        stripped = val.lstrip()
+        if stripped.startswith(('=', '+', '-', '@')):
+            return "'" + val
+    return val
+
+
 def append_exempt_report(book, rows, college_exempt, summary, issues=()):
     report_name = '学院免勤统计' if college_exempt else '免勤统计'
     sheet = book.create_sheet(report_name)
     columns = COLLEGE_REPORT_COLUMNS if college_exempt else REPORT_COLUMNS
     sheet.append(columns)
     for row in rows:
-        sheet.append(['未匹配学院' if column == '学院' and row['免勤状态'] == '学院待核对'
-                      else row[column] for column in columns])
+        sheet.append([
+            _sanitize_cell_text('未匹配学院' if column == '学院' and row['免勤状态'] == '学院待核对'
+                                else row[column])
+            for column in columns
+        ])
         for cell in sheet[sheet.max_row]:
             # Excel 将以等号开头的字符串当作公式，导出的来源标签应始终是文本。
             if cell.data_type == 'f':
@@ -181,7 +193,11 @@ def append_exempt_report(book, rows, college_exempt, summary, issues=()):
         review = book.create_sheet('免勤核对')
         review.append(['问题', '来源', '处理说明'])
         for item in review_issues:
-            review.append([item['type'], item['review_ref'], item['note']])
+            review.append([
+                _sanitize_cell_text(item['type']),
+                _sanitize_cell_text(item['review_ref']),
+                _sanitize_cell_text(item['note']),
+            ])
             for cell in review[review.max_row]:
                 if cell.data_type == 'f':
                     cell.data_type = 's'

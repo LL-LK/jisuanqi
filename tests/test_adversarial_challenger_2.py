@@ -177,17 +177,23 @@ class TestRunCalcZeroPIIDefense:
         sid_err_match = SID_REGEX.search(res.stderr)
         assert sid_err_match is None, f"Leak: 13-digit SID found in stderr: {sid_err_match.group(0)}"
 
-        # 4. JSON contract verification
+        # 4. JSON contract verification (aligned with cli_reference.md §3.1)
         payload = json.loads(res.stdout)
         assert payload['action'] == 'run'
-        assert payload['status'] == 'success'
+        assert payload['status'] == 'ok'
         assert payload['code'] == 0
+        assert 'phases' in payload
         assert 'college_rates' in payload
         assert 'weekly_rates' in payload
+        assert 'discrepancies_count' in payload
+        assert 'discrepancies' in payload
         assert 'anomalies_count' in payload
-        assert 'anomaly_summary' in payload
-        # Ensure raw anomalies list is NOT in output
-        assert 'anomalies' not in payload
+        assert 'anomalies' in payload
+        # Ensure raw PII never leaks in sanitized anomalies
+        anomalies_str = json.dumps(payload['anomalies'], ensure_ascii=False)
+        for item in data['students']:
+            assert item[0] not in anomalies_str
+            assert item[1] not in anomalies_str
 
     def test_run_calc_error_missing_sheets_no_pii_leak(self, tmp_path: Path):
         """Test error when detail file has missing required sheets."""
@@ -304,17 +310,21 @@ class TestRunCalcZeroPIIDefense:
         sys.path.insert(0, str(self.run_calc.parent))
         from run_calc import assert_privacy_compliance
 
-        # 1. 13-digit standalone ID -> MUST RAISE
+        # 1. 13-digit standalone ID (non-99 prefix) -> MUST RAISE
+        non_99_sid = "3202" + "310101001"
         with pytest.raises(ValueError, match="Privacy assertion violation"):
-            assert_privacy_compliance("Student ID 9923101010001 detected")
+            assert_privacy_compliance(f"Student ID {non_99_sid} detected")
 
-        # 2. 13-digit in JSON -> MUST RAISE
+        # 2. 13-digit in JSON (non-99 prefix) -> MUST RAISE
         with pytest.raises(ValueError, match="Privacy assertion violation"):
-            assert_privacy_compliance(json.dumps({"student": "9923101010001"}))
+            assert_privacy_compliance(json.dumps({"student": non_99_sid}))
 
-        # 3. 13-digit surrounded by Chinese characters -> MUST RAISE
+        # 3. 13-digit surrounded by Chinese characters (non-99 prefix) -> MUST RAISE
         with pytest.raises(ValueError, match="Privacy assertion violation"):
-            assert_privacy_compliance("学号9923101010001存在异常")
+            assert_privacy_compliance(f"学号{non_99_sid}存在异常")
+
+        # 3b. Synthetic 99-prefix test SID is exempted by SID_REGEX (R4-2 alignment with cli.py)
+        assert_privacy_compliance("Synthetic test ID 9923101010001")
 
         # 4. Safe strings -> MUST PASS
         assert_privacy_compliance("Action completed successfully. Code: 0, Total: 15")

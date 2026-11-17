@@ -100,6 +100,27 @@ python scripts/run_calc.py --list-runs
 python scripts/run_calc.py --show-run 5536
 ```
 
+### 3.3.1 计算前清公式留数字（全工作簿零公式纯数值契约）
+所有导出的最终 Excel 结果表（含全部工作表及受保护/辅助列）**严格禁止保留公式**（`data_type == 'f'` 数为 `0`）：
+- **免勤、实到、应到等人数字段**：固化为纯整数数字（例如 `39`、`105`，格式 `'0'`）；
+- **出勤率、周平均、巡查率等百分比字段**：固化为浮点比例数值，格式保持/设为 **`'0.00%'`**（保留两位小数带 `%`）。
+
+计算前可显式先将含公式源表展平为纯数字工作簿：
+```bash
+python scripts/run_calc.py --flatten-formulas path/to/input.xlsx --out path/to/pure_values.xlsx
+# 如需原子就地替换输入文件，可追加 --in-place
+python scripts/run_calc.py --flatten-formulas path/to/input.xlsx --in-place
+```
+
+### 3.3.2 计算前隐私剔除与模型零隐私隔离 (`core/privacy.py`)
+所有模型/Agent 可见输出（CLI JSON/文本、Skill 报告、`generate_diagnostic_log`）严格遵循“**仅见伪匿名学号 `ANON-XXXXXXXXXX` 与学院免勤人数**”原则：
+- **彻底剥离姓名（含 `张*` 半打码）**、真实 8–13 位学号、病事假原文、个人班级详情、手机号与身份证号，违者由 `PrivacyViolationError` 硬阻断；
+- 模型 JSON 仅提供 `college_exempt_summary`（学院维度免勤人数、4 类宏观计数及伪匿名学号集合）；
+- 计算前可执行独立剔除，生成仍可 100% 等价参与计算的最小化脱敏副本：
+```bash
+python scripts/run_calc.py --strip-privacy path/to/exempt.xlsx --out path/to/exempt_sanitized.xlsx
+```
+
 ### 3.4 防篡改与原表实到核对
 ```bash
 python scripts/run_calc.py \

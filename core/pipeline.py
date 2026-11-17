@@ -253,6 +253,8 @@ def run(config: RunConfig) -> RunResult:
         for name in export_result.removed_sheets:
             result.anomalies.append(_anomaly('已删除多余工作表', 'info', name,
                                              '按规则只保留三张原始工作表'))
+        for note in export_result.notes:
+            result.anomalies.append(_anomaly('公式展平提示', 'warn', '导出工作簿', note))
 
         # ---- 异常清单 ----
         for sheet, college, day, room, excess in getattr(calc, 'overflow', []):
@@ -318,7 +320,7 @@ def run(config: RunConfig) -> RunResult:
                     detail, agg, alias=dictionary.college_alias).college_rates()
                 _write_summary(config, summary_target, detail, calc, final_rates)
                 result.summary_output_path = summary_target
-            except (OSError, ValueError) as exc:
+            except (OSError, ValueError, ArithmeticError) as exc:
                 result.anomalies.append(_anomaly('终稿导出失败', 'warn', '汇总终稿', str(exc)))
         t_export_end = time.perf_counter()
         export_ms = int((t_export_end - t_export_start) * 1000)
@@ -415,8 +417,11 @@ def _write_summary(config, path, detail, calc, rates):
         if (session := parse_session(sheet)))
     by_college = defaultdict(dict)
     for rate in rates:
-        college = calc.exempt_college(rate.college)
-        by_college[college][(rate.day, rate.session)] = rate
+        detail_name = rate.college
+        exempt_name = calc.exempt_college(rate.college)
+        by_college[detail_name][(rate.day, rate.session)] = rate
+        if exempt_name and exempt_name != detail_name:
+            by_college[exempt_name][(rate.day, rate.session)] = rate
 
     results, notes = {}, {}
     for college, by_scope in by_college.items():
@@ -424,16 +429,24 @@ def _write_summary(config, path, detail, calc, rates):
         if not all(rate is not None and rate.rate is not None for rate in daily):
             notes[college] = '待复核：应统计时段缺实到或有效应到人数'
             continue
+        ex_college = calc.exempt_college(college)
         identity_pending = any(
             (college, day, session) in calc.agg.identity_review_scopes
+            or (ex_college, day, session) in calc.agg.identity_review_scopes
             for day, session in scopes)
         review_pending = any(
             (college, day, session) in calc.agg.incomplete_scopes
+            or (ex_college, day, session) in calc.agg.incomplete_scopes
             or (college, day, session) in calc.agg.rule_review_scopes
+            or (ex_college, day, session) in calc.agg.rule_review_scopes
             for day, session in scopes)
         denominator = sum(rate.expected - rate.exempt for rate in daily)
-        results[college] = sum(rate.actual for rate in daily) / denominator
         flags = []
+        if denominator <= 0:
+            results[college] = 1.0 if any((rate.expected or 0) > 0 for rate in daily) else 0.0
+            flags.append('全员免勤（满勤）' if denominator == 0 else '免勤人数超额')
+        else:
+            results[college] = sum(rate.actual for rate in daily) / denominator
         if identity_pending:
             flags.append('身份争议已按1人计')
         if review_pending:

@@ -720,14 +720,18 @@ class TestSkillScriptsIntegration:
         # 2. 姓名隐私断言：测试数据中的姓名不可在 stdout 中出现
         assert '测试生甲' not in stdout
 
-        # 3. 校验聚合结果
+        # 3. 校验聚合结果（对齐 cli_reference.md §3.1 契约）
         data = json.loads(stdout)
         assert data['action'] == 'run'
-        assert data['status'] == 'success'
+        assert data['status'] == 'ok'
         assert data['code'] == 0
+        assert 'phases' in data
         assert 'college_rates' in data
         assert 'weekly_rates' in data
-        assert 'anomaly_summary' in data
+        assert 'discrepancies_count' in data
+        assert 'discrepancies' in data
+        assert 'anomalies_count' in data
+        assert 'anomalies' in data
         assert os.path.isfile(data['output_file'])
 
     def test_skill_run_calc_verify_tamper(self, synthetic_sample):
@@ -873,16 +877,18 @@ class TestCliRemediationAndHardening:
         with pytest.raises(AssertionError, match="Privacy violation"):
             _print_json(leak_payload)
 
-        # 2. 验证脱敏后的学号（带星号）与 99 开头的测试占位学号不被拦截
+        # 2. 验证 SID_PATTERN 豁免 99 测试号段，且 _print_json 放行脱敏星号/ANON 标识
+        assert SID_PATTERN.search("9900000000001") is None
         safe_payload = {
             "masked_sid": "2024*******78",
-            "test_sid": "9900000000001",
+            "anon_sid": "ANON-A1B2C3D4E5",
             "action": "test",
         }
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             _print_json(safe_payload)
         assert "2024*******78" in buf.getvalue()
+        assert "ANON-A1B2C3D4E5" in buf.getvalue()
 
     def test_cli_complete_mode_and_summary_out(self, synthetic_sample, tmp_path: Path):
         """测试 --complete-mode 与 --summary-out 核心参数。"""

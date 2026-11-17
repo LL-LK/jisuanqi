@@ -131,20 +131,52 @@ def load_real_personal(data_path: str):
     if not data_path or not os.path.exists(data_path):
         return sids, names
     wb = load_workbook(data_path, data_only=True, read_only=True)
-    for sn in wb.sheetnames:
-        ws = wb[sn]
-        for row in ws.iter_rows(min_row=3, values_only=True):
-            if not row:
-                continue
-            sid = str(row[1]).strip() if len(row) > 1 and row[1] else ''
-            name = str(row[3]).strip() if len(row) > 3 and row[3] else ''
-            if sid and re.fullmatch(r'\d{13}', sid):
-                sids.add(sid)
-            if name and len(name) >= 2 and len(name) <= 4 and re.fullmatch(r'[一-鿿]{2,4}', name):
-                if name in PLACEHOLDER_NAMES:
+    try:
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            # 动态探测表头行与学号/姓名列索引
+            header_row = 2
+            sid_idx = None
+            name_idx = None
+            for r_idx, row in enumerate(ws.iter_rows(max_row=25, values_only=True), start=1):
+                if not row:
                     continue
-                names.add(name)
-    wb.close()
+                for c_idx, val in enumerate(row):
+                    v_str = re.sub(r'\s+', '', str(val or ''))
+                    if not v_str:
+                        continue
+                    if '学号' in v_str and '位数' not in v_str and '状态' not in v_str:
+                        if sid_idx is None or v_str == '学号':
+                            sid_idx = c_idx
+                            header_row = r_idx
+                    elif '姓名' in v_str and not any(x in v_str for x in ('辅导员', '老师', '班主任')):
+                        if name_idx is None or v_str in ('姓名', '学生姓名'):
+                            name_idx = c_idx
+                            header_row = r_idx
+                if sid_idx is not None and name_idx is not None:
+                    break
+            if sid_idx is None and name_idx is None:
+                sid_idx, name_idx, header_row = 1, 3, 2
+
+            for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+                if not row:
+                    continue
+                raw_sid = row[sid_idx] if sid_idx is not None and len(row) > sid_idx else None
+                if isinstance(raw_sid, float) and raw_sid.is_integer():
+                    sid = str(int(raw_sid))
+                elif isinstance(raw_sid, int) and not isinstance(raw_sid, bool):
+                    sid = str(raw_sid)
+                else:
+                    sid = str(raw_sid).strip() if raw_sid is not None else ''
+                name = str(row[name_idx]).strip() if name_idx is not None and len(row) > name_idx and row[name_idx] is not None else ''
+                if sid and re.fullmatch(r'\d{8,13}', sid):
+                    sids.add(sid)
+                if name and 2 <= len(name) <= 4 and re.fullmatch(r'[一-鿿]{2,4}', name):
+                    if name in PLACEHOLDER_NAMES:
+                        continue
+                    names.add(name)
+    finally:
+        wb.close()
     return sids, names
 
 

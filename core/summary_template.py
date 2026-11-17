@@ -177,6 +177,29 @@ def create_blank_summary_workbook(
     return wb
 
 
+def _lookup_college_value(mapping: Optional[Dict[str, object]], c_name: str):
+    """按精确键、官方学院别名及前缀容错查找学院对应值。"""
+    if not mapping or not c_name:
+        return None
+    if c_name in mapping:
+        return mapping[c_name]
+    try:
+        from .dictionary import DEFAULT_COLLEGE_ALIASES
+        alias_to_canon = {alias: formal for formal, alias, _ in DEFAULT_COLLEGE_ALIASES}
+        canon_target = alias_to_canon.get(c_name, c_name)
+        if canon_target in mapping:
+            return mapping[canon_target]
+        for k, v in mapping.items():
+            if alias_to_canon.get(k, k) == canon_target:
+                return v
+    except Exception:
+        pass
+    for k, v in mapping.items():
+        if k in c_name or c_name in k or (len(k) >= 2 and len(c_name) >= 2 and k[:2] == c_name[:2]):
+            return v
+    return None
+
+
 def fill_summary_workbook(
     wb: openpyxl.Workbook,
     college_rates: Dict[str, float],
@@ -204,20 +227,21 @@ def fill_summary_workbook(
         c_name = str(c_name).strip()
 
         # 1. 学生出勤率
-        rate = college_rates.get(c_name)
+        rate = _lookup_college_value(college_rates, c_name)
         if rate is not None:
             cell_rate = ws.cell(r, 3, value=round(rate, 4))
             cell_rate.number_format = "0.00%"
 
         # 2. 辅导员巡查率
-        if college_patrol_rates and c_name in college_patrol_rates:
-            p_rate = college_patrol_rates[c_name]
+        p_rate = _lookup_college_value(college_patrol_rates, c_name)
+        if p_rate is not None:
             cell_patrol = ws.cell(r, 4, value=round(p_rate, 4))
             cell_patrol.number_format = "0.00%"
 
         # 3. 执行效果
-        if college_anomalies and c_name in college_anomalies and college_anomalies[c_name]:
-            ws.cell(r, 5, value=college_anomalies[c_name])
+        anom = _lookup_college_value(college_anomalies, c_name)
+        if anom:
+            ws.cell(r, 5, value=anom)
 
     return wb
 

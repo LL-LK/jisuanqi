@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from datetime import date, timedelta
@@ -480,11 +481,14 @@ def parse_college_label(text):
 def normalize_class(text, custom_map: Optional[dict] = None) -> str:
     """班级名归一，用于把集体申请与个人申请对应到同一把钥匙。
 
-    '应用统计学2026-1班' 与 '应用统计学26-1' 归一为同一 key。
+    '应用统计学2026-1班' 与 '应用统计学26-1' 归一为同一 key；
+    预脱敏匿名班级键 'CLS-XXXXXXXX' 保持原样去横杠。
     """
     raw = strip_spaces(text)
     if not raw:
         return ''
+    if re.fullmatch(r'CLS-?[0-9A-Fa-f]{6,16}', raw):
+        return raw.upper().replace('-', '')
     if custom_map and raw in custom_map:
         raw = strip_spaces(custom_map[raw])
     raw = re.sub(r'全体学生', '', raw)
@@ -529,7 +533,7 @@ def parse_int(value) -> Optional[int]:
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        if isinstance(value, float) and value != value:   # NaN
+        if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
             return None
         return int(value)
     raw = strip_spaces(value)
@@ -539,8 +543,11 @@ def parse_int(value) -> Optional[int]:
     if not m:
         return None
     try:
-        return int(round(float(m.group(0))))
-    except ValueError:
+        fval = float(m.group(0))
+        if math.isnan(fval) or math.isinf(fval):
+            return None
+        return int(round(fval))
+    except (ValueError, OverflowError):
         return None
 
 

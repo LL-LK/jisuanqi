@@ -336,13 +336,23 @@ def preflight_excel_file(path: str) -> Dict[str, Any]:
         except OSError:
             pass
 
+    has_formulas = False
+    formula_count = 0
+
     if health.is_valid:
         table_type = classify_excel_file(path)
         wb = None
         try:
+            from io import BytesIO
             from openpyxl import load_workbook
-            wb = load_workbook(path, read_only=True)
+            from .formulas import count_workbook_formulas, xlsx_has_formulas
+            with open(path, 'rb') as fh:
+                raw_bytes = fh.read()
+            has_formulas = xlsx_has_formulas(raw_bytes)
+            wb = load_workbook(BytesIO(raw_bytes), read_only=True, data_only=False)
             sheet_names = list(wb.sheetnames)
+            if has_formulas:
+                formula_count = count_workbook_formulas(wb)
         except Exception:
             pass
         finally:
@@ -363,6 +373,8 @@ def preflight_excel_file(path: str) -> Dict[str, Any]:
         'file_size_formatted': _format_size(file_size),
         'sha256_prefix': sha_prefix,
         'sheet_names': sheet_names,
+        'has_formulas': has_formulas,
+        'formula_count': formula_count,
     }
 
 
@@ -519,7 +531,8 @@ def _sanitize_anomaly_text(text: str, extra_names: Optional[set] = None) -> str:
         sid = m.group(3)
         bracket_close = m.group(4)
         names_to_mask.add(name)
-        return f'{DiagnosticMasker.mask_name(name)}{bracket_open}{DiagnosticMasker.mask_sid(sid)}{bracket_close}'
+        masked_name = '[已脱敏]' if len(name) <= 2 else DiagnosticMasker.mask_name(name)
+        return f'{masked_name}{bracket_open}{DiagnosticMasker.mask_sid(sid)}{bracket_close}'
 
     s = re.sub(
         r'([\u4e00-\u9fa5·•]{2,12})\s*([\(（])(\d{8,13})([\)\)）])',
@@ -527,16 +540,18 @@ def _sanitize_anomaly_text(text: str, extra_names: Optional[set] = None) -> str:
         s,
     )
 
-    # 2. 匹配 学生/同学/老师/辅导员 + 姓名（支持含间隔点的少数民族长姓名，并在常见助词/标点前截断）
+    # 2. 匹配 学生/同学/老师/辅导员/班主任/申请人/联系人/姓名 + 姓名（支持空格容错与含间隔点的少数民族长姓名）
     def _mask_student_name(m: re.Match) -> str:
         prefix = m.group(1)
         name = m.group(2)
         names_to_mask.add(name)
-        return prefix + DiagnosticMasker.mask_name(name)
+        masked_name = '[已脱敏]' if len(name) <= 2 else DiagnosticMasker.mask_name(name)
+        return prefix + masked_name
 
     s = re.sub(
-        r'(学生|同学|老师|辅导员)([\u4e00-\u9fa5]{2,4}(?:[·•][\u4e00-\u9fa5]{1,10})?)'
-        r'(?=因|在|于|申|请|未|已|被|的|有|无|缺|迟|旷|报|反|告|录|登|核|查|\s|[，。；：！？、,.;:!?\(\)（）/\\]|$)',
+        r'((?:学生|同学|老师|辅导员|班主任|申请人|联系人|姓名\s*[:：=]?)\s*)'
+        r'([\u4e00-\u9fa5]{2,4}?(?:[·•][\u4e00-\u9fa5]{1,10})?)'
+        r'(?=因|在|于|申|请|未|已|被|的|有|无|缺|迟|旷|报|反|告|录|登|核|查|异常|冲突|重名|\s|[，。；：！？、,.;:!?\(\)（）/\\]|$)',
         _mask_student_name,
         s,
     )
@@ -545,7 +560,8 @@ def _sanitize_anomaly_text(text: str, extra_names: Optional[set] = None) -> str:
     if names_to_mask:
         for name in sorted(names_to_mask, key=len, reverse=True):
             if name in s:
-                s = s.replace(name, DiagnosticMasker.mask_name(name))
+                masked_name = '[已脱敏]' if len(name) <= 2 else DiagnosticMasker.mask_name(name)
+                s = s.replace(name, masked_name)
 
     # 4. 独立数字学号
     s = re.sub(
@@ -561,6 +577,8 @@ def generate_diagnostic_log(
     result: Optional[Any] = None,
     error_trace: Optional[str] = None,
     anomalies: Optional[List[Dict[str, Any]]] = None,
+    *,
+    strict_privacy: bool = False,
 ) -> str:
     """生成完全脱敏的工业级系统诊断与故障排查 Markdown 报告。
 
@@ -654,12 +672,15 @@ def generate_diagnostic_log(
             from openpyxl import load_workbook
             wb = load_workbook(path, read_only=True, data_only=True)
             lines.append(f'- **{label} 工作表列表**：{wb.sheetnames}')
+            from .privacy import PrivacyRedactor
+            hdr_redactor = PrivacyRedactor() if strict_privacy else None
             for sname in wb.sheetnames[:3]:
                 ws = wb[sname]
                 header_cells = []
                 for row in ws.iter_rows(max_row=1, values_only=True):
                     header_cells = [
-                        _sanitize_anomaly_text(str(c).strip())
+                        (hdr_redactor.redact_text(str(c).strip()) if hdr_redactor is not None
+                         else _sanitize_anomaly_text(str(c).strip()))
                         for c in row if c is not None
                     ][:15]
                     break
@@ -680,9 +701,26 @@ def generate_diagnostic_log(
     if target_anomalies is None and result is not None:
         target_anomalies = getattr(result, 'anomalies', [])
 
+    from .privacy import PrivacyRedactor, collect_sensitive_entities
+    redactor = PrivacyRedactor() if strict_privacy else None
+    f_names, f_sids, f_reasons, f_classes = collect_sensitive_entities(result)
+    redact_kwargs = {
+        'extra_names': f_names,
+        'extra_sids': f_sids,
+        'extra_reasons': f_reasons,
+        'extra_classes': f_classes,
+    }
+    known_student_names: set = set(f_names)
+
+    def _clean(txt: Any) -> str:
+        s_txt = str(txt or '')
+        if redactor is not None:
+            return redactor.redact_text(s_txt, **redact_kwargs)
+        return _sanitize_anomaly_text(s_txt, known_student_names)
+
     if result is not None:
         ok = getattr(result, 'ok', False)
-        err_msg = _sanitize_anomaly_text(str(getattr(result, "error", "") or ""))
+        err_msg = _clean(getattr(result, 'error', '') or '')
         status_text = '成功完成' if ok else f'执行失败 ({err_msg})'
         lines.append(f'- **执行结果**：{status_text}')
         if hasattr(result, 'sheets'):
@@ -696,14 +734,13 @@ def generate_diagnostic_log(
         lines.append('')
         lines.append('| 序号 | 级别 | 异常类型 | 范围 (已脱敏) | 说明 (已脱敏) |')
         lines.append('| :--- | :--- | :--- | :--- | :--- |')
-        known_student_names: set = set()
         for idx, a in enumerate(anom_list[:20], start=1):
             lvl = a.get('level', '')
             atype = a.get('type', '')
             raw_scope = a.get('scope', '')
             raw_note = a.get('note', '')
-            scope_masked = _sanitize_anomaly_text(raw_scope, known_student_names)
-            note_masked = _sanitize_anomaly_text(raw_note, known_student_names)
+            scope_masked = _clean(raw_scope)
+            note_masked = _clean(raw_note)
             lines.append(f'| {idx} | {lvl} | {atype} | {scope_masked} | {note_masked} |')
         if len(anom_list) > 20:
             lines.append(f'| ... | ... | ... | 剩余 {len(anom_list) - 20} 条已省略 | ... |')
@@ -713,7 +750,7 @@ def generate_diagnostic_log(
     lines.append('## 五、错误堆栈跟踪 (Traceback)')
     err = error_trace or (getattr(result, 'error', '') if result else '')
     if err:
-        masked_err = _sanitize_anomaly_text(str(err))
+        masked_err = _clean(err)
         lines.append('```text')
         lines.append(masked_err.strip())
         lines.append('```')
@@ -724,4 +761,4 @@ def generate_diagnostic_log(
     lines.append('---')
     lines.append('分享前请核对日志内容。')
     full_text = '\n'.join(lines)
-    return _sanitize_anomaly_text(full_text)
+    return _clean(full_text)

@@ -102,6 +102,20 @@ python scripts/run_calc.py \
 python scripts/run_calc.py --preflight path/to/detail.xlsx path/to/exempt.xlsx
 ```
 
+#### B2. Pre-Calc Formula Flattening & Zero-Formula Output Invariant
+All exported Excel files are guaranteed to contain **zero formula cells** (`data_type != 'f'` across all sheets including `屏风` and protected columns). Headcount cells (`免勤`, `实到`, `应到`) remain pure integers (e.g. `39`, `105` formatted as `'0'`), while percentage rate cells (`出勤率`, `周平均`, `巡查率`) remain floating-point ratios formatted as **`'0.00%'`** (2 decimal places). To strip formulas from an input workbook prior to calculation:
+```bash
+python scripts/run_calc.py --flatten-formulas path/to/detail.xlsx --out path/to/detail_pure.xlsx
+# Or atomically overwrite in place:
+python scripts/run_calc.py --flatten-formulas path/to/detail.xlsx --in-place
+```
+
+#### B3. Pre-Calc Privacy Stripping & Zero-PII Model Isolation
+All model-facing CLI/Skill/diagnostic outputs strictly expose ONLY keyed pseudonymous SIDs (`ANON-XXXXXXXXXX`), college exemption counts, and 4-category reason breakdown counts (`college_exempt_summary`). Real student names (including surname-masked forms like `张*`), raw SIDs, raw reasons, personal classes, phones, and ID numbers are blocked by `PrivacyViolationError`. Before feeding workbooks into automated workflows, run:
+```bash
+python scripts/run_calc.py --strip-privacy path/to/exempt.xlsx --out path/to/exempt_sanitized.xlsx
+```
+
 #### C. Historical Runs Query
 ```bash
 python scripts/run_calc.py --list-runs

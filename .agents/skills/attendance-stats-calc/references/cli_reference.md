@@ -46,6 +46,10 @@ python scripts/run_calc.py [OPTIONS]
 | **`--diagnostic-log PATH`** | str | `None` | 生成完全脱敏的工业级系统诊断与故障排查 Markdown 报告（.md）。 |
 | **`--verify-tamper PATH`** | str | `None` | 校验指定结果 Excel 文件的防篡改元数据与 HMAC 签名完整性。 |
 | **`--against-detail PATH`** | str | `None` | 配合 `--verify-tamper` 使用，与可信原始明细表逐格核对实到人数。 |
+| **`--flatten-formulas PATH`** | str | `None` | 计算前清除指定 Excel 内全部公式并固化为纯数值（整数 `'0'` 与两位小数 `'0.00%'`）。 |
+| **`--strip-privacy PATH`** | str | `None` | 计算前剔除学生姓名/病由/个人班级/联系方式并伪匿名化学号，生成最小化脱敏副本。 |
+| **`--in-place`** | Flag | `False` | 仅与 `--flatten-formulas` 或 `--strip-privacy` 配合使用，原子就地替换输入文件。 |
+| **`--app-root PATH`** | str | 自动探测 | 显式指定三早一晚考勤系统根目录路径（仅 `scripts/run_calc.py` 与 `scripts/dict_tool.py` 支持）。 |
 
 ---
 
@@ -164,3 +168,57 @@ python scripts/run_calc.py [OPTIONS]
   ]
 }
 ```
+
+### 3.4 计算前公式展平 (`--flatten-formulas` / `action: "flatten_formulas"`)
+
+将含公式的 Excel 工作簿预先清除全部公式单元格，仅保留纯数值（免勤/实到等整数设为 `'0'`，出勤率等百分比保持浮点并设为 `'0.00%'`），供后续计算使用：
+
+```bash
+python scripts/run_calc.py --flatten-formulas path/to/input.xlsx --out path/to/pure_values.xlsx
+# 若需原子就地替换输入文件，可追加 --in-place
+python scripts/run_calc.py --flatten-formulas path/to/input.xlsx --in-place
+```
+
+```json
+{
+  "action": "flatten_formulas",
+  "status": "ok",
+  "code": 0,
+  "duration_ms": 18,
+  "output_file": "path/to/pure_values.xlsx",
+  "total_formula_cells": 12,
+  "formulas_frozen": 12,
+  "frozen_from_cache": 8,
+  "evaluated_formulas": 4,
+  "cleared_unresolved": 0,
+  "residual_formulas": 0,
+  "strings_sanitized": 0,
+  "unresolved_cells": []
+}
+```
+
+### 3.5 计算前隐私剔除 (`--strip-privacy` / `action: "strip_privacy"`)
+
+彻底剔除姓名、真实学号、个人班级、病事假原文及手机/身份证等高敏字段，生成仅含 `ANON-*` 伪匿名学号、学院归属与 4 类标准分类的脱敏工作簿（可直接参与后续计算且统计数值 100% 等价）：
+
+```bash
+python scripts/run_calc.py --strip-privacy path/to/exempt.xlsx --out path/to/exempt_sanitized.xlsx
+```
+
+```json
+{
+  "action": "strip_privacy",
+  "status": "ok",
+  "code": 0,
+  "duration_ms": 22,
+  "output_file": "path/to/exempt_sanitized.xlsx",
+  "rows_stripped": 39,
+  "sids_anonymized": 39,
+  "names_removed": 39,
+  "sensitive_cells_cleared": 12,
+  "formulas_frozen": 0,
+  "residual_formulas": 0
+}
+```
+
+> 说明：完整计算 `action: "run"` 的输出中同样新增 `college_exempt_summary` 字段，严格仅返回各学院免勤人数、4 类计数与 `ANON-*` 匿名学号列表，不含任何学生真实隐私信息。

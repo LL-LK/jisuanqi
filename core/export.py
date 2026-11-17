@@ -16,6 +16,7 @@ import hashlib
 import hmac
 import os
 from contextlib import closing, contextmanager
+from io import BytesIO
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -25,6 +26,8 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Protection, Si
 from openpyxl.utils import get_column_letter
 
 from .calc import ESTIMATE_RGB, estimate_source
+from .formulas import (count_workbook_formulas, evaluate_workbook_cell,
+                       flatten_workbook_formulas, xlsx_has_formulas)
 from .io_detail import actual_cells
 from .model import CollegeRate, DetailModel
 from .parsing import strip_illegal
@@ -48,6 +51,8 @@ class ExportResult:
         self.removed_sheets: List[str] = []
         self.notes: List[str] = []
         self.formulas_frozen = 0
+        self.formulas_evaluated = 0
+        self.formulas_cleared = 0
         self.strings_sanitized = 0
 
 
@@ -344,6 +349,11 @@ def diff_actuals_detailed(source_path: str, result_path: str) -> List[Dict[str, 
                     if source_cell.data_type == 'f':
                         source_cached, result_cached = cached
                         expected = source_cached[name].cell(row, col).value
+                        if expected is None:
+                            try:
+                                expected = evaluate_workbook_cell(source, name, row, col, wb_values=source_cached)
+                            except Exception:
+                                expected = None
                         effective = result_cached[name].cell(row, col).value
                         if target.data_type == 'f' and value == original and (expected is None or effective == expected):
                             continue
@@ -395,48 +405,48 @@ def export(detail_path: str,
     if _same_path(detail_path, output_path):
         raise ValueError('输出路径不能与输入明细表相同，以免覆盖原始文件')
 
-    with open(detail_path, 'rb') as f_detail:
-        wb = load_workbook(f_detail)          # 保留公式与格式
+    raw_bytes = Path(detail_path).read_bytes()
+    wb = load_workbook(BytesIO(raw_bytes))          # 保留格式与样式
     result.output_path = output_path
 
     try:
-        # ---- 保真：把带缓存值的公式固化为数值 ----
-        # openpyxl 不写公式的缓存值，若直接保存，所有公式格在按值读取时会变成空，
-        # 既破坏原始数据，也让下游工具读到空值。这里用带缓存的值替换公式。
-        frozen = 0
-        sanitized = 0
+        # ---- 保真：全工作簿公式零残留展平（覆盖全部工作表及受保护列） ----
+        # 优先使用 Excel 原生缓存值；无缓存值则通过纯 Python 求值器计算；
+        # 仍无法求值的冷门公式则清除公式文本，确保最终工作簿不含任何公式单元格。
         originals = actual_cells(wb)
-        formula_actuals = {key for key in originals if wb[key[0]].cell(key[1], key[2]).data_type == 'f'}
-        if college_exempt is None or formula_actuals:
-            with open(detail_path, 'rb') as f_values:
-                wb_values = load_workbook(f_values, data_only=True)
-            try:
-                for name in (name for name in wb.sheetnames if name in ALLOWED_SHEETS[:2]):
-                    ws_f = wb[name]
-                    ws_v = wb_values[name]
-                    for row in ws_f.iter_rows():
-                        for cell in row:
-                            key = (name, cell.row, cell.column)
-                            if cell.column in detail.protected_cols.get(name, ()):
-                                continue
-                            if college_exempt is not None and key not in formula_actuals:
-                                continue
-                            if cell.data_type == 'f':
-                                cached = ws_v.cell(cell.row, cell.column).value
-                                if cached is not None:
-                                    cell.value = cached
-                                    if key in formula_actuals:
-                                        originals[key] = cached
-                                    frozen += 1
-                            elif key not in originals and isinstance(cell.value, str):
-                                cleaned = strip_illegal(cell.value)
-                                if cleaned != cell.value:
-                                    cell.value = cleaned
-                                    sanitized += 1
-            finally:
-                wb_values.close()
-        result.formulas_frozen = frozen
-        result.strings_sanitized = sanitized
+        updated_actuals: Dict[Tuple[str, int, int], Any] = {}
+        if xlsx_has_formulas(raw_bytes):
+            with closing(load_workbook(BytesIO(raw_bytes), data_only=True)) as wb_values:
+                flatten_stats = flatten_workbook_formulas(
+                    wb,
+                    wb_values=wb_values,
+                    clear_unresolved=True,
+                    sanitize_strings=True,
+                    sanitize_fn=strip_illegal,
+                    updated_cells=updated_actuals,
+                )
+        else:
+            flatten_stats = flatten_workbook_formulas(
+                wb,
+                wb_values=None,
+                clear_unresolved=True,
+                sanitize_strings=True,
+                sanitize_fn=strip_illegal,
+                updated_cells=updated_actuals,
+            )
+        for key, new_val in updated_actuals.items():
+            if key in originals:
+                originals[key] = new_val
+        result.formulas_frozen = flatten_stats.formulas_frozen
+        result.formulas_evaluated = flatten_stats.evaluated_formulas
+        result.formulas_cleared = flatten_stats.cleared_unresolved
+        result.strings_sanitized = flatten_stats.strings_sanitized
+        if flatten_stats.unresolved_cells:
+            preview = '、'.join(flatten_stats.unresolved_cells[:5])
+            suffix = ' 等' if len(flatten_stats.unresolved_cells) > 5 else ''
+            result.notes.append(
+                f'已清除 {flatten_stats.cleared_unresolved} 个无法求值的公式单元格（{preview}{suffix}）'
+            )
 
         # ---- 清理多余工作表（只留三张原表） ----
         for name in list(wb.sheetnames):
@@ -487,7 +497,7 @@ def export(detail_path: str,
                     for day, column in detail.exempt_cols_by_sheet.get(sheet_name, {}).items():
                         cell = _college_cell(ws, lo, hi, column, result)
                         value = college_exempt.get((sheet_name, block.name, day))
-                        cell.value = value if block.name not in written_colleges else None
+                        cell.value = int(value) if (value is not None and block.name not in written_colleges) else None
                         cell.number_format = '0'
                         cell.alignment = Alignment(horizontal='center', vertical='center')
                         result.written_exempt_cells += cell.value is not None
@@ -529,6 +539,10 @@ def export(detail_path: str,
         for (sheet, row, col), original in originals.items():
             if sheet not in wb.sheetnames or wb[sheet].cell(row, col).value != original:
                 raise ValueError(f'导出时实到人数发生变化：{sheet}!{get_column_letter(col)}{row}')
+
+        residual = count_workbook_formulas(wb)
+        if residual > 0:
+            raise ValueError(f'导出结果表仍残留 {residual} 个公式单元格')
 
         # ---- 6. 写入隐藏防篡改校验元数据表 `_系统校验元数据` ----
         generate_tamper_metadata(wb, detail=detail, rates=rates)

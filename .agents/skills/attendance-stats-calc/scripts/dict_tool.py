@@ -74,7 +74,7 @@ def discover_app_root(custom_path: Optional[str] = None) -> Optional[str]:
 
 def resolve_dict_path(given_path: Optional[str]) -> str:
     """Resolve dictionary file path from argument, cwd, or standard locations."""
-    if given_path and os.path.isfile(given_path):
+    if given_path:
         return os.path.abspath(given_path)
 
     cwd = os.getcwd()
@@ -98,8 +98,6 @@ def resolve_dict_path(given_path: Optional[str]) -> str:
         if os.path.isfile(cand_root):
             return cand_root
 
-    if given_path:
-        return os.path.abspath(given_path)
     return direct
 
 

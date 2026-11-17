@@ -380,14 +380,16 @@ class Calculator:
                                 eff_expected = expected
                                 eff_exempt = exempt
 
-                            if (denominator is not None and denominator <= 0) or (eff_denominator is not None and eff_denominator <= 0):
+                            is_eff_zero = eff_denominator is not None and eff_denominator <= 0
+                            is_global_zero = denominator is not None and denominator <= 0 and not missing_rooms
+                            if is_eff_zero or is_global_zero:
                                 rate = 1.0
                                 day_rates.append(rate)
                                 status = '全员免勤（满勤）'
                                 note = ('学院总应到 %s − 当次总免勤 %d = %s ≤ 0，按 100.00%% 满勤出勤计入。'
-                                        % (expected if (denominator is not None and denominator <= 0) else eff_expected,
-                                           exempt if (denominator is not None and denominator <= 0) else eff_exempt,
-                                           denominator if (denominator is not None and denominator <= 0) else eff_denominator))
+                                        % (expected if is_global_zero else eff_expected,
+                                           exempt if is_global_zero else eff_exempt,
+                                           denominator if is_global_zero else eff_denominator))
                                 anomalies.append('全员免勤（免勤人数达到或超出应到人数）')
                             elif eff_denominator is None:
                                 status = '无法确定应到人数'

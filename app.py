@@ -300,6 +300,7 @@ class MainWindow(QMainWindow):
         self.resize(1360, 880)
         self.setAcceptDrops(True)
         self.result = None
+        self._last_config = None
         self.thread = None
         self.worker = None
         self._last_error_trace = None
@@ -1082,6 +1083,7 @@ class MainWindow(QMainWindow):
             include_exempt_summary=self.chk_append_sheets.isChecked(),
         )
 
+        self._last_config = config
         self._run_start_time = datetime.now()
         if hasattr(self, 'conflict_banner'):
             self.conflict_banner.setVisible(False)
@@ -1892,7 +1894,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, '导出诊断日志', 'attendance_diagnostic.log', 'Log Files (*.log)')
         if not path:
             return
-        log_content = generate_diagnostic_log(self.result, self._last_error_trace)
+        log_content = generate_diagnostic_log(
+            config=getattr(self, '_last_config', None),
+            result=self.result,
+            error_trace=self._last_error_trace,
+            strict_privacy=True,
+        )
         try:
             with open(path, 'w', encoding='utf-8') as fh:
                 fh.write(log_content)

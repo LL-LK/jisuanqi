@@ -92,7 +92,8 @@ def test_college_template_and_multiple_exemption_files(tmp_path, average_label, 
         assert sheet['J4'].value == pytest.approx(54 / 59)
         assert sheet['L4'].value == pytest.approx(expected_week)
         assert sheet['L6'].value is None
-        assert [sheet[k].value for k in ('M3', 'N4', 'O4')] == ['=1+2', '人工记录', '已巡查']
+        assert [sheet[k].value for k in ('M3', 'N4', 'O4')] == [3, '人工记录', '已巡查']
+        assert sheet['M3'].data_type != 'f'
         assert sheet['O4'].font.bold
         assert 'M3:M5' in sheet.merged_cells
         assert wb['屏风']['A1'].value == '原始内容'

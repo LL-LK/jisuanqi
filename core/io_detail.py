@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from .formulas import open_evaluated_workbook
 from .model import CollegeBlock, DetailModel, RoomRow
 from .parsing import (WEEKDAY_NAMES, normalize_text, parse_college_label,
                       parse_int, parse_weeks, strip_spaces)
@@ -218,10 +219,15 @@ def _detect_data_cols(ws, header_row: int):
 def load_detail(path: str) -> DetailModel:
     """读取明细表。只解析雁山校区的工作表；屏风表原样保留、不参与任何计算。"""
     model = DetailModel(path=path)
-    with open(path, 'rb') as f:
-        wb = load_workbook(f, data_only=True)
+    with open_evaluated_workbook(path) as (wb, flatten_stats):
         try:
             model.sheet_names = list(wb.sheetnames)
+            if flatten_stats.unresolved_cells:
+                preview = '、'.join(flatten_stats.unresolved_cells[:5])
+                suffix = ' 等' if len(flatten_stats.unresolved_cells) > 5 else ''
+                model.warnings.append(
+                    f'输入明细表存在 {len(flatten_stats.unresolved_cells)} 个无法求值且无缓存的公式单元格（{preview}{suffix}），已按空值处理'
+                )
 
             for sheet_name in wb.sheetnames:
                 ws = wb[sheet_name]

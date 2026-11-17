@@ -67,6 +67,14 @@ The **`attendance-stats-calc`** skill governs the end-to-end processing pipeline
 6. **Strict Reason Category Whitelist**:
    - The exemption reason classification sheet (`免勤理由分类`) strictly admits only four authorized category values:
      `('课务学业', '社团竞赛训练', '健康医疗', '其他')`.
+7. **Zero-Formula Pure-Numeric Excel Output & Pre-Calc Flattening**:
+   - All exported `.xlsx` workbooks (`detail` result, summary template result, final summary) MUST contain **zero formula cells** (`data_type == 'f'` / `=...`) across all sheets (`雁山（早）`, `雁山（晚）`, `屏风`, `protected_cols`).
+   - **Counts** (`免勤`, `实到`, `应到`, `免勤人次`) are stored as pure numbers (`int` such as `39`, `105` with format `'0'`); **Rates** (`出勤率`, `周平均`, `巡查率`) are stored as float ratios with two-decimal percentage format **`'0.00%'`** (e.g., `95.24%`).
+   - Run `--flatten-formulas <input.xlsx> --out <pure.xlsx>` before calculation to clear formulas cleanly leaving numbers; `core` readers/exporters also evaluate uncached formulas automatically.
+8. **Strict Model-Side Zero-Privacy Isolation (`core/privacy.py`)**:
+   - Models and scripts MUST ONLY access pseudonymous student IDs (`ANON-XXXXXXXXXX` via keyed HMAC-SHA256) and college-level exemption counts (`college_exempt_summary` + 4-category totals `课务学业`/`社团竞赛训练`/`健康医疗`/`其他`).
+   - Student names (even surname-masked `张*`), raw 8–13 digit SIDs, personal classes, raw leave/medical reasons, phone numbers, and ID card numbers are scrubbed from CLI/Skill/diagnostic outputs (`PrivacyViolationError` hard gate).
+   - Run `--strip-privacy <input.xlsx> --out <sanitized.xlsx>` before calculation to produce a minimal pseudonymized workbook that still computes 100% identical college exemption counts.
 
 ---
 
@@ -78,9 +86,15 @@ The **`attendance-stats-calc`** skill governs the end-to-end processing pipeline
 
 ## 3. Quick Start & Common Commands
 
-### 3.1 Preflight Health Diagnosis
+### 3.1 Preflight Health Diagnosis & Formula Clearing
 ```bash
 python scripts/run_calc.py --preflight path/to/detail.xlsx path/to/exempt.xlsx
+
+# Optional: clear formulas leaving numeric counts ('0') and two-decimal % rates ('0.00%') before calculation
+python scripts/run_calc.py --flatten-formulas path/to/detail.xlsx --out path/to/detail_pure.xlsx
+
+# Optional: strip student PII (names, raw reasons, personal classes, contacts) and pseudonymize SIDs (ANON-*) before calculation
+python scripts/run_calc.py --strip-privacy path/to/exempt.xlsx --out path/to/exempt_anonymized.xlsx
 ```
 
 ### 3.2 Automated Full Calculation
